@@ -1,6 +1,6 @@
 /**
- * MP Ascensores — Proxy Zendesk unificado
- * Puerto: 3001
+ * MP Ascensores — Proxy Zendesk unificado v3 (con checkpoint)
+ * Puerto: 3001 (local) | process.env.PORT (Railway)
  * Uso: node server.js
  */
 
@@ -15,16 +15,36 @@ app.use(cors({ origin: '*' }));
 app.use(express.json());
 
 // ── Credenciales ─────────────────────────────────────────────────────────────
-const SUBDOMAIN = 'mpascensoresatc';
-const EMAIL     = 'fbj@mpascensores.com';
-const TOKEN     = '3LpjcUPFnB9Fgk7mQwCRcVBHE17rz1GsJhBcZyXK';
+const SUBDOMAIN = process.env.ZD_SUBDOMAIN || 'mpascensoresatc';
+const EMAIL     = process.env.ZD_EMAIL     || 'fbj@mpascensores.com';
+const TOKEN     = process.env.ZD_TOKEN     || '3LpjcUPFnB9Fgk7mQwCRcVBHE17rz1GsJhBcZyXK';
 const AUTH      = Buffer.from(EMAIL + '/token:' + TOKEN).toString('base64');
 const BASE      = `https://${SUBDOMAIN}.zendesk.com/api/v2`;
 const HEADERS   = { Authorization: 'Basic ' + AUTH, 'Content-Type': 'application/json' };
 
-// ── Llamadas ──────────────────────────────────────────────────────────────────
-const LLAMADAS_FILE = path.join(__dirname, 'llamadas.json');
+// ── Ficheros de persistencia ──────────────────────────────────────────────────
+const LLAMADAS_FILE   = path.join(__dirname, 'llamadas.json');
+const CHECKPOINT_FILE = path.join(__dirname, 'checkpoint.json');
 
+// ── Checkpoint ────────────────────────────────────────────────────────────────
+function loadCheckpoint() {
+  if (!fs.existsSync(CHECKPOINT_FILE)) return null;
+  try {
+    const cp = JSON.parse(fs.readFileSync(CHECKPOINT_FILE, 'utf8'));
+    console.log(`Checkpoint cargado: ${cp.tickets?.length || 0} tickets, savedAt: ${cp.savedAt || '?'}`);
+    return cp;
+  } catch (e) { console.warn('checkpoint.json no legible:', e.message); return null; }
+}
+
+function saveCheckpoint(tickets, afterUrl) {
+  try {
+    const cp = { tickets, afterUrl, savedAt: new Date().toISOString() };
+    fs.writeFileSync(CHECKPOINT_FILE, JSON.stringify(cp));
+    console.log(`Checkpoint guardado: ${tickets.length} tickets`);
+  } catch (e) { console.warn('No se pudo guardar checkpoint:', e.message); }
+}
+
+// ── Llamadas ──────────────────────────────────────────────────────────────────
 function loadLlamadas() {
   if (!fs.existsSync(LLAMADAS_FILE)) return { tickets: {}, meta: {} };
   try { return JSON.parse(fs.readFileSync(LLAMADAS_FILE, 'utf8')); }
@@ -102,13 +122,27 @@ async function fetchAll(startUrl) {
   return items;
 }
 
+// ── Carga incremental con checkpoint ─────────────────────────────────────────
 async function fetchIncremental() {
-  let items = [];
-  let url = BASE + '/incremental/tickets/cursor.json?start_time=0&per_page=100';
+  const cp = loadCheckpoint();
+  let items = cp ? [...cp.tickets] : [];
+  let startUrl;
+
+  if (cp && cp.afterUrl) {
+    console.log(`Reanudando desde checkpoint: ${items.length} tickets ya cargados`);
+    startUrl = cp.afterUrl;
+  } else {
+    console.log('Primera carga completa desde el inicio...');
+    startUrl = BASE + '/incremental/tickets/cursor.json?start_time=0&per_page=100';
+  }
+
+  let url = startUrl;
   let page = 0;
+  let lastAfterUrl = cp?.afterUrl || null;
+
   while (url) {
     page++;
-    if (page % 10 === 0) console.log(`  Tickets: página ${page} (${items.length} cargados)...`);
+    if (page % 10 === 0) console.log(`  Tickets: página ${page} (${items.length} total)...`);
     const r = await fetch(url, { headers: HEADERS });
     if (r.status === 429) {
       const wait = parseInt(r.headers.get('retry-after') || '60');
@@ -122,8 +156,13 @@ async function fetchIncremental() {
       items = items.concat(data.tickets);
       cache.ticketsPartial = items.filter(isValidTicket).length;
     }
-    if (data.end_of_stream === true) { url = null; }
-    else { url = data.after_url || null; }
+    lastAfterUrl = data.after_url || null;
+    if (data.end_of_stream === true) {
+      saveCheckpoint(items, lastAfterUrl);
+      url = null;
+    } else {
+      url = lastAfterUrl;
+    }
     if (url) await new Promise(res => setTimeout(res, 300));
   }
   return items;
@@ -173,29 +212,6 @@ function getDateRange(period) {
 function inPeriod(ticket, start, end) {
   const d = new Date(ticket.created_at);
   return d >= start && d <= end;
-}
-
-// ── Cálculo de minutos laborables ────────────────────────────────────────────
-function workMinutes(from, to) {
-  if (!from || !to) return null;
-  const a = new Date(from), b = new Date(to);
-  if (b <= a) return 0;
-  let mins = 0;
-  const cur = new Date(a);
-  while (cur < b) {
-    const dow = cur.getDay();
-    if (dow !== 0 && dow !== 6) {
-      const dayStart = new Date(cur); dayStart.setHours(8,0,0,0);
-      const dayEnd   = new Date(cur); dayEnd.setHours(18,0,0,0);
-      const s = cur < dayStart ? dayStart : cur;
-      const e = b < dayEnd ? b : dayEnd;
-      if (e > s) mins += (e - s) / 60000;
-    }
-    cur.setHours(0,0,0,0);
-    cur.setDate(cur.getDate() + 1);
-    cur.setHours(8,0,0,0);
-  }
-  return Math.round(mins);
 }
 
 // ── Métricas por técnico ─────────────────────────────────────────────────────
@@ -249,6 +265,12 @@ async function loadInBackground(force = false) {
   if (cache.loading) { console.log('Ya hay una carga en curso.'); return; }
   const now = Date.now();
   if (!force && cache.loadedAt && (now - cache.loadedAt < CACHE_TTL) && cache.tickets.length > 0) return;
+
+  if (force && fs.existsSync(CHECKPOINT_FILE)) {
+    try { fs.unlinkSync(CHECKPOINT_FILE); console.log('Checkpoint eliminado (recarga forzada).'); }
+    catch(e) { console.warn('No se pudo eliminar checkpoint:', e.message); }
+  }
+
   cache.loading = true; cache.loadingStage = 'tickets'; cache.lastError = null;
   console.log('\n=== Iniciando carga ===');
   try {
@@ -281,12 +303,17 @@ async function loadInBackground(force = false) {
   } finally { cache.loading = false; }
 }
 
-// ── Endpoints ─────────────────────────────────────────────────────────────────
+// ── Servir estáticos ──────────────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, 'dashboards')));
 app.use(express.static(path.join(__dirname)));
 
+// ── Endpoints ─────────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
-  res.json({ ok: true, time: new Date().toISOString(), cachedTickets: cache.tickets.length, cachedMetrics: cache.metrics.length, cacheAge: cache.loadedAt ? Math.round((Date.now()-cache.loadedAt)/1000)+'s' : 'none', loading: cache.loading, loadingStage: cache.loadingStage, ticketsPartial: cache.ticketsPartial, lastError: cache.lastError, statsReady: cache.stats !== null });
+  let cp = null;
+  if (fs.existsSync(CHECKPOINT_FILE)) {
+    try { const raw = JSON.parse(fs.readFileSync(CHECKPOINT_FILE,'utf8')); cp = { tickets: raw.tickets?.length || 0, savedAt: raw.savedAt, hasAfterUrl: !!raw.afterUrl }; } catch(e) {}
+  }
+  res.json({ ok: true, time: new Date().toISOString(), cachedTickets: cache.tickets.length, cachedMetrics: cache.metrics.length, cacheAge: cache.loadedAt ? Math.round((Date.now()-cache.loadedAt)/1000)+'s' : 'none', loading: cache.loading, loadingStage: cache.loadingStage, ticketsPartial: cache.ticketsPartial, lastError: cache.lastError, statsReady: cache.stats !== null, checkpoint: cp });
 });
 
 app.get('/api/stats', (req, res) => {
@@ -301,10 +328,15 @@ app.get('/api/stats', (req, res) => {
 app.get('/api/reload', (req, res) => {
   cache.tickets = []; cache.metrics = []; cache.stats = null; cache.loadedAt = null;
   loadInBackground(true);
-  res.json({ ok: true, message: 'Recarga iniciada.' });
+  res.json({ ok: true, message: 'Recarga completa iniciada (checkpoint eliminado).' });
 });
 
-// ── Endpoints de exploración ──────────────────────────────────────────────────
+app.get('/api/refresh', (req, res) => {
+  cache.tickets = []; cache.metrics = []; cache.stats = null; cache.loadedAt = null;
+  loadInBackground(false);
+  res.json({ ok: true, message: 'Recarga incremental iniciada (usando checkpoint).' });
+});
+
 app.get('/api/ticket/:id', async (req, res) => {
   try {
     const r = await fetch(`${BASE}/tickets/${req.params.id}.json`, { headers: HEADERS });
@@ -384,7 +416,8 @@ app.get('/api/llamadas/scan', async (req, res) => {
         await new Promise(r => setTimeout(r, 350));
       }
       llamadasCache.meta = { ...llamadasCache.meta, lastScan: new Date().toISOString(), lastScanRango: { desde, hasta }, totalTickets: Object.keys(llamadasCache.tickets).length, conLlamada: Object.values(llamadasCache.tickets).filter(Boolean).length };
-      fs.writeFileSync(LLAMADAS_FILE, JSON.stringify(llamadasCache, null, 2));
+      try { fs.writeFileSync(LLAMADAS_FILE, JSON.stringify(llamadasCache, null, 2)); }
+      catch(e) { console.warn('No se pudo guardar llamadas.json:', e.message); }
       console.log(`Scan completado: ${conLlamada} con llamada en el rango.`);
     } catch(e) { console.error('Error en scan llamadas:', e.message); }
   })();
@@ -447,9 +480,9 @@ app.get('/api/tickets', (req, res) => {
 
 // ── Arrancar ──────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-  console.log(`\nServidor MP Ascensores activo en http://localhost:${PORT}`);
-  console.log('Endpoints: /health  /api/stats  /api/reload  /api/tickets');
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`\nServidor MP Ascensores v3 (checkpoint) activo en puerto ${PORT}`);
+  console.log('Endpoints: /health  /api/stats  /api/reload  /api/refresh  /api/tickets');
   console.log('Llamadas:  /api/llamadas/stats  /api/llamadas/scan  /api/llamadas/meta\n');
-  loadInBackground(true);
+  loadInBackground(false);
 });
