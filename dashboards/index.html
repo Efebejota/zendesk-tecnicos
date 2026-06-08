@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MP Ascensores — Dashboards</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:#f0f2f5;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 20px}
+.logo{font-size:13px;font-weight:600;color:#888;letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px;text-align:center}
+h1{font-size:22px;font-weight:700;color:#1a1a2e;margin-bottom:6px;text-align:center}
+.sub{font-size:13px;color:#888;margin-bottom:40px;text-align:center}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;width:100%;max-width:560px}
+.card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:28px 24px;text-decoration:none;color:inherit;transition:all .18s;display:flex;flex-direction:column;gap:12px}
+.card:hover{transform:translateY(-3px);box-shadow:0 8px 24px rgba(0,0,0,.08);border-color:#378ADD}
+.card-icon{font-size:32px}
+.card-title{font-size:16px;font-weight:600;color:#111}
+.card-desc{font-size:12px;color:#888;line-height:1.5}
+.card-badge{display:inline-flex;align-items:center;gap:6px;background:#EAF3DE;color:#3B6D11;font-size:11px;font-weight:500;padding:3px 10px;border-radius:20px;width:fit-content}
+.status{margin-top:40px;font-size:11px;color:#aaa;display:flex;align-items:center;gap:8px}
+.dot{width:7px;height:7px;border-radius:50%;background:#ccc}
+.dot.ok{background:#1D9E75}.dot.loading{background:#BA7517;animation:pulse 1.2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+@media(max-width:480px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<div class="logo">MP Ascensores</div>
+<h1>Centro de Dashboards</h1>
+<p class="sub">Selecciona el dashboard que quieres consultar</p>
+
+<div class="grid">
+  <a class="card" href="/kpi.html">
+    <div class="card-icon">📊</div>
+    <div class="card-title">KPI Dashboard</div>
+    <div class="card-desc">Tickets, tiempos, SLAs, canales, clientes y datos de dirección. Vista mensual y acumulada.</div>
+    <div class="card-badge">Vista global</div>
+  </a>
+  <a class="card" href="/dashboard.html">
+    <div class="card-icon">👥</div>
+    <div class="card-title">Dashboard Técnicos</div>
+    <div class="card-desc">KPIs individuales por técnico: tickets válidos, puntos, SLA tipo 1 y 2, evolución y ranking.</div>
+    <div class="card-badge">Por técnico</div>
+  </a>
+</div>
+
+<div class="status">
+  <div class="dot" id="dot"></div>
+  <span id="stxt">Comprobando servidor...</span>
+</div>
+
+<script>
+async function checkHealth() {
+  try {
+    const r = await fetch('/health');
+    const d = await r.json();
+    const dot = document.getElementById('dot');
+    const txt = document.getElementById('stxt');
+    if (d.loadingStage === 'done') {
+      dot.className = 'dot ok';
+      txt.textContent = `Servidor activo · ${d.cachedTickets.toLocaleString()} tickets cargados`;
+    } else {
+      dot.className = 'dot loading';
+      txt.textContent = `Cargando datos... (${d.ticketsPartial.toLocaleString()} tickets)`;
+      setTimeout(checkHealth, 10000);
+    }
+  } catch(e) {
+    document.getElementById('dot').className = 'dot';
+    document.getElementById('stxt').textContent = 'Sin conexión con el servidor';
+  }
+}
+checkHealth();
+</script>
+</body>
+</html>

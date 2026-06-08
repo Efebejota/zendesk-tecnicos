@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dashboard Técnicos — MP Ascensores</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;font-size:14px;color:#1a1a1a;background:#f0f2f5;padding:20px}
+h1{font-size:18px;font-weight:600;margin-bottom:4px}
+.subtitle{font-size:12px;color:#888;margin-bottom:1.5rem}
+
+/* Status bar */
+.status-bar{display:flex;align-items:center;gap:12px;background:#fff;border:1px solid #eee;border-radius:8px;padding:10px 16px;margin-bottom:1.5rem;font-size:12px;color:#555;flex-wrap:wrap}
+.status-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.dot-ok{background:#1D9E75}.dot-loading{background:#BA7517;animation:pulse 1.2s infinite}.dot-error{background:#A32D2D}.dot-idle{background:#ccc}
+.status-bar button{margin-left:auto;padding:5px 14px;border:1px solid #ddd;border-radius:6px;background:#fff;color:#555;font-size:12px;cursor:pointer}
+.status-bar button:hover{background:#f5f5f5}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+/* Tabs */
+.tabs{display:flex;gap:0;border-bottom:1px solid #ddd;margin-bottom:1.5rem;background:#fff;padding:0 1rem;border-radius:8px 8px 0 0;flex-wrap:wrap;overflow-x:auto}
+.tab{padding:10px 14px;cursor:pointer;border:none;background:transparent;color:#666;font-size:12px;border-bottom:2px solid transparent;transition:all .15s;white-space:nowrap;flex-shrink:0}
+.tab.active{color:#111;border-bottom-color:#378ADD;font-weight:500}
+.tab:hover:not(.active){color:#111}
+.panel{display:none}.panel.active{display:block}
+
+/* Período */
+.period-sel{display:flex;gap:6px;margin-bottom:1.5rem;flex-wrap:wrap}
+.period-btn{padding:6px 14px;border:1px solid #ddd;border-radius:6px;background:#fff;color:#666;font-size:12px;cursor:pointer;transition:all .15s}
+.period-btn.active{background:#378ADD;color:#fff;border-color:#378ADD}
+
+/* Métricas */
+.metrics-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px;margin-bottom:1.5rem}
+.metric-card{background:#fff;border-radius:8px;padding:1rem;border:1px solid #eee;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+.metric-label{font-size:11px;color:#888;margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em}
+.metric-value{font-size:22px;font-weight:600;color:#111}
+.metric-sub{font-size:10px;color:#aaa;margin-top:4px}
+.good{color:#1D9E75}.warn{color:#BA7517}.bad{color:#A32D2D}
+
+/* Cards y tablas */
+.section-title{font-size:12px;font-weight:600;color:#888;margin-bottom:10px;margin-top:1.5rem;text-transform:uppercase;letter-spacing:.05em}
+.card{background:#fff;border-radius:8px;padding:1rem;border:1px solid #eee;margin-bottom:1.5rem;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+.charts-row{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:1.5rem}
+.chart-wrap{position:relative;width:100%;height:240px}
+table{width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed}
+th{text-align:left;padding:9px 10px;border-bottom:1px solid #eee;color:#888;font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+td{padding:9px 10px;border-bottom:1px solid #eee;color:#111;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#f9f9f9}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:500}
+.bg{background:#EAF3DE;color:#3B6D11}.bw{background:#FAEEDA;color:#854F0B}.bb{background:#FCEBEB;color:#A32D2D}.bn{background:#eee;color:#666}
+
+/* Técnico */
+.tech-header{display:flex;align-items:center;gap:12px;margin-bottom:1.5rem;padding:1rem;background:#fff;border-radius:8px;border:1px solid #eee}
+.avatar{width:44px;height:44px;border-radius:50%;background:#E6F1FB;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:13px;color:#185FA5;flex-shrink:0}
+.tech-name{font-size:16px;font-weight:600}.tech-email{font-size:12px;color:#888}
+
+/* Otros */
+.loading{text-align:center;padding:3rem;color:#888;font-size:13px;background:#fff;border-radius:8px}
+.error-box{padding:1rem;background:#FCEBEB;border-radius:8px;color:#A32D2D;font-size:13px}
+.legend{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:10px;font-size:11px;color:#888}
+.leg-item{display:flex;align-items:center;gap:5px}
+.leg-sq{width:10px;height:10px;border-radius:2px;flex-shrink:0}
+.filter-note{font-size:11px;color:#aaa;margin-bottom:1rem;font-style:italic}
+.progress-bar{height:5px;border-radius:3px;background:#eee;margin-top:6px;overflow:hidden}
+.progress-fill{height:100%;border-radius:3px}
+@media(max-width:700px){.charts-row{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<h1>📊 Dashboard Técnicos — MP Ascensores</h1>
+<p class="subtitle">Tickets válidos · Excluye fusionados, inválidos y sin tipo cliente · Tiempos en minutos laborables</p>
+
+<div class="status-bar">
+  <span class="status-dot dot-idle" id="dotStatus"></span>
+  <span id="txtStatus">Iniciando...</span>
+  <button onclick="reloadData()">↺ Recargar Zendesk</button>
+</div>
+
+<div id="app">
+  <div class="tabs" id="tabBar">
+    <button class="tab active" data-tab="general">Vista general</button>
+  </div>
+  <div class="period-sel">
+    <button class="period-btn active" data-period="last_week">Semana pasada</button>
+    <button class="period-btn" data-period="current_month">Mes actual</button>
+    <button class="period-btn" data-period="last_month">Último mes cerrado</button>
+    <button class="period-btn" data-period="year">Acumulado año</button>
+  </div>
+  <div id="panels"></div>
+</div>
+
+<script>
+const PROXY = 'http://localhost:3001';
+
+const TECNICOS = [
+  { id: '18823504352925', name: 'Amine Laaguidi',        email: 'AL@mpascensores.com' },
+  { id: '22511063320093', name: 'Javier Sosa Jimenez',   email: 'jsj@mpascensores.com' },
+  { id: '19330437521693', name: 'Eduardo Robles Gamito', email: 'erg@mpascensores.com' },
+  { id: '19330468060189', name: 'Pedro Calvo Estallo',   email: 'pjce@mplifts.com' },
+  { id: '22510403813533', name: 'Carlos Perez Osuna',    email: 'cpo@mpascensores.com' },
+  { id: '27405062363805', name: 'Raidel Alba',           email: 'rah@mpascensores.com' },
+  { id: '35441820724509', name: 'Michael Prieto',        email: 'mpri@mpascensores.com' },
+  { id: '22829521407261', name: 'Ruud Barten',           email: 'mphollandrb@mplifts.com' },
+  { id: '27939255391261', name: 'Kamal Arrad',           email: 'ka@mplifts.com' },
+  { id: '24252949539869', name: 'Mar Durán',             email: 'md@mpascensores.com' },
+  { id: '25081523536157', name: 'Andreas Scheidl',       email: 'as@mpascensores.com' },
+  { id: '26600613366301', name: 'Alexis Didelot',        email: 'ad@mpascenseurs.com' },
+  { id: '25238078751389', name: 'Nicklas Jonsson',       email: 'nj@mpsweden.se' },
+  { id: '26600564602525', name: 'Antonio Gómez',         email: 'mpcentroag@mpascensores.com' },
+  { id: '34726482176285', name: 'Multimarca',            email: 'multibrand@mplifts.com' },
+  { id: '24254682817949', name: 'Fernando Becerra',      email: 'fbj@mpascensores.com' },
+];
+
+function initials(n) { return n.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase(); }
+
+let currentPeriod = 'last_week';
+let statsData     = null;
+let charts        = {};
+let pollTimer     = null;
+
+// ── Formato ───────────────────────────────────────────────
+function minFmt(min) {
+  if (min === null || min === undefined) return '—';
+  return min < 60 ? `${Math.round(min)}m` : `${(min/60).toFixed(1)}h`;
+}
+function slaClass(pct, t) {
+  if (pct === null || pct === undefined) return '';
+  return pct >= t ? 'good' : pct >= t*0.8 ? 'warn' : 'bad';
+}
+function badgeClass(pct, t) {
+  if (pct === null || pct === undefined) return 'bn';
+  return pct >= t ? 'bg' : pct >= t*0.8 ? 'bw' : 'bb';
+}
+function slaColor(pct, t) {
+  if (pct === null) return '#ccc';
+  return pct >= t ? '#1D9E75' : pct >= t*0.8 ? '#BA7517' : '#A32D2D';
+}
+function progressBar(pct, t) {
+  return `<div class="progress-bar"><div class="progress-fill" style="width:${Math.min(pct||0,100)}%;background:${slaColor(pct,t)}"></div></div>`;
+}
+
+// ── Status bar ────────────────────────────────────────────
+function setStatus(type, msg) {
+  const dot = document.getElementById('dotStatus');
+  const txt = document.getElementById('txtStatus');
+  dot.className = 'status-dot ' + { ok:'dot-ok', loading:'dot-loading', error:'dot-error', idle:'dot-idle' }[type];
+  txt.textContent = msg;
+}
+
+// ── Cards de métricas ─────────────────────────────────────
+function metricCards(m, totalRaw) {
+  const excl = totalRaw - m.total;
+  return `
+  <p class="filter-note">${totalRaw} tickets totales · ${excl} excluidos · ${m.total} válidos analizados</p>
+  <div class="metrics-grid">
+    <div class="metric-card"><div class="metric-label">Tickets válidos</div><div class="metric-value">${m.total}</div><div class="metric-sub">${m.resolved} resueltos</div></div>
+    <div class="metric-card"><div class="metric-label">Puntos resueltos</div><div class="metric-value" style="color:#378ADD">${m.puntos}</div></div>
+    <div class="metric-card"><div class="metric-label">T. Respuesta SLA1</div><div class="metric-value">${minFmt(m.avgFR1)}</div><div class="metric-sub">tipo 1 · min laborables</div></div>
+    <div class="metric-card"><div class="metric-label">T. Respuesta SLA2</div><div class="metric-value">${minFmt(m.avgFR2)}</div><div class="metric-sub">tipo 2 · min laborables</div></div>
+    <div class="metric-card"><div class="metric-label">T. Resolución SLA1</div><div class="metric-value">${minFmt(m.avgRes1)}</div><div class="metric-sub">tipo 1 · min laborables</div></div>
+    <div class="metric-card"><div class="metric-label">T. Resolución SLA2</div><div class="metric-value">${minFmt(m.avgRes2)}</div><div class="metric-sub">tipo 2 · min laborables</div></div>
+    <div class="metric-card"><div class="metric-label">SLA Tipo 1</div><div class="metric-value ${slaClass(m.sla1,50)}">${m.sla1!==null?m.sla1+'%':'—'}</div><div class="metric-sub">obj. 50% · ≤15min resp.</div>${m.sla1!==null?progressBar(m.sla1,50):''}</div>
+    <div class="metric-card"><div class="metric-label">SLA Tipo 2</div><div class="metric-value ${slaClass(m.sla2,75)}">${m.sla2!==null?m.sla2+'%':'—'}</div><div class="metric-sub">obj. 75% · ≤25min resp.</div>${m.sla2!==null?progressBar(m.sla2,75):''}</div>
+  </div>`;
+}
+
+// ── Vista general ──────────────────────────────────────────
+function renderGeneralPanel(period) {
+  const d = statsData[period];
+  if (!d) return;
+  const g      = d.general;
+  const agents = Object.entries(d.byAgent)
+    .filter(([,m]) => m.total > 0)
+    .sort((a,b) => b[1].total - a[1].total);
+
+  document.getElementById('panel-general').innerHTML = `
+  ${metricCards(g, d.totalRaw)}
+
+  <div class="section-title">Comparativa por técnico — Tickets y Puntos</div>
+  <div class="legend">
+    <span class="leg-item"><span class="leg-sq" style="background:#378ADD"></span>Tickets válidos</span>
+    <span class="leg-item"><span class="leg-sq" style="background:#8B5CF6"></span>Puntos</span>
+  </div>
+  <div class="card">
+    <div style="position:relative;width:100%;height:${Math.max(260,agents.length*38+80)}px">
+      <canvas id="chartTickets"></canvas>
+    </div>
+  </div>
+
+  <div class="section-title">Comparativa por técnico — SLA</div>
+  <div class="legend">
+    <span class="leg-item"><span class="leg-sq" style="background:#1D9E75"></span>SLA Tipo 1 % (obj. 50%)</span>
+    <span class="leg-item"><span class="leg-sq" style="background:#BA7517"></span>SLA Tipo 2 % (obj. 75%)</span>
+  </div>
+  <div class="card">
+    <div style="position:relative;width:100%;height:${Math.max(260,agents.length*38+80)}px">
+      <canvas id="chartSLA"></canvas>
+    </div>
+  </div>
+
+  <div class="section-title">Ranking de técnicos</div>
+  <div class="card" style="padding:0;overflow:hidden">
+  <table>
+    <colgroup><col style="width:20%"><col style="width:9%"><col style="width:9%"><col style="width:13%"><col style="width:13%"><col style="width:13%"><col style="width:13%"></colgroup>
+    <thead><tr><th>Técnico</th><th>Tickets</th><th>Puntos</th><th>T. Resp.</th><th>T. Resol.</th><th>SLA 1</th><th>SLA 2</th></tr></thead>
+    <tbody>${agents.map(([name,m])=>`<tr>
+      <td style="font-weight:500">${name}</td>
+      <td>${m.total}</td>
+      <td style="color:#378ADD;font-weight:500">${m.puntos}</td>
+      <td>${minFmt(m.avgFR)}</td>
+      <td>${minFmt(m.avgRes)}</td>
+      <td><span class="badge ${badgeClass(m.sla1,50)}">${m.sla1!==null?m.sla1+'%':'—'}</span></td>
+      <td><span class="badge ${badgeClass(m.sla2,75)}">${m.sla2!==null?m.sla2+'%':'—'}</span></td>
+    </tr>`).join('')}</tbody>
+  </table>
+  </div>`;
+
+  if (charts.tickets) { charts.tickets.destroy(); delete charts.tickets; }
+  if (charts.sla)     { charts.sla.destroy();     delete charts.sla; }
+
+  const ctxT = document.getElementById('chartTickets');
+  if (ctxT) {
+    charts.tickets = new Chart(ctxT, {
+      type: 'bar',
+      data: {
+        labels: agents.map(([n])=>n),
+        datasets: [
+          { label:'Tickets', data:agents.map(([,m])=>m.total), backgroundColor:'#378ADD' },
+          { label:'Puntos',  data:agents.map(([,m])=>m.puntos), backgroundColor:'#8B5CF6' }
+        ]
+      },
+      options: {
+        indexAxis:'y', responsive:true, maintainAspectRatio:false,
+        plugins:{ legend:{ display:false } },
+        scales:{ x:{ position:'top' }, y:{ ticks:{ font:{ size:11 } } } }
+      }
+    });
+  }
+
+  const ctxS = document.getElementById('chartSLA');
+  if (ctxS) {
+    charts.sla = new Chart(ctxS, {
+      type: 'bar',
+      data: {
+        labels: agents.map(([n])=>n),
+        datasets: [
+          { label:'SLA 1 %', data:agents.map(([,m])=>m.sla1), backgroundColor:'#1D9E75CC' },
+          { label:'SLA 2 %', data:agents.map(([,m])=>m.sla2), backgroundColor:'#BA7517CC' }
+        ]
+      },
+      options: {
+        indexAxis:'y', responsive:true, maintainAspectRatio:false,
+        plugins:{ legend:{ display:false } },
+        scales:{
+          x:{ position:'top', min:0, max:100, ticks:{ callback:v=>v+'%' } },
+          y:{ ticks:{ font:{ size:11 } } }
+        }
+      }
+    });
+  }
+}
+
+// ── Vista técnico individual ────────────────────────────────
+function renderTechPanel(tecnico, period) {
+  const d = statsData[period];
+  if (!d) return;
+  const m = d.byAgent[tecnico.name] || { total:0, resolved:0, puntos:0 };
+  const tickets = (d.techTickets && d.techTickets[tecnico.id]) ? d.techTickets[tecnico.id] : [];
+
+  const periods = ['last_week','current_month','last_month','year'];
+  const pLabels = ['Sem. pasada','Mes actual','Últ. mes','Año'];
+  const pData   = periods.map(p => statsData[p]?.byAgent[tecnico.name] || { total:0, puntos:0, sla1:null, sla2:null });
+
+  const panel = document.getElementById(`panel-tech-${tecnico.id}`);
+  if (!panel) return;
+
+  panel.innerHTML = `
+  <div class="tech-header">
+    <div class="avatar">${initials(tecnico.name)}</div>
+    <div><div class="tech-name">${tecnico.name}</div><div class="tech-email">${tecnico.email}</div></div>
+  </div>
+  ${metricCards(m, m.total)}
+
+  <div class="section-title">Evolución por período</div>
+  <div class="charts-row">
+    <div class="card"><div class="legend">
+      <span class="leg-item"><span class="leg-sq" style="background:#378ADD"></span>Tickets</span>
+      <span class="leg-item"><span class="leg-sq" style="background:#8B5CF6"></span>Puntos</span>
+    </div><div class="chart-wrap"><canvas id="chartEvol_${tecnico.id}"></canvas></div></div>
+    <div class="card"><div class="legend">
+      <span class="leg-item"><span class="leg-sq" style="background:#1D9E75;border-radius:50%"></span>SLA 1 %</span>
+      <span class="leg-item"><span class="leg-sq" style="background:#BA7517;border-radius:50%"></span>SLA 2 %</span>
+    </div><div class="chart-wrap"><canvas id="chartSlaEvol_${tecnico.id}"></canvas></div></div>
+  </div>
+
+  <div class="section-title">Últimos tickets válidos</div>
+  <div class="card" style="padding:0;overflow:hidden">
+  <table>
+    <colgroup><col style="width:8%"><col style="width:36%"><col style="width:11%"><col style="width:8%"><col style="width:12%"><col style="width:12%"><col style="width:13%"></colgroup>
+    <thead><tr><th>ID</th><th>Asunto</th><th>Estado</th><th>Pts</th><th>T. Resp.</th><th>T. Resol.</th><th>Creado</th></tr></thead>
+    <tbody>${tickets.length
+      ? tickets.map(t=>`<tr>
+          <td style="color:#888">#${t.id}</td>
+          <td title="${t.subject||''}">${t.subject||'(sin asunto)'}</td>
+          <td><span class="badge ${t.status==='solved'||t.status==='closed'?'bg':t.status==='open'?'bw':'bb'}">${t.status}</span></td>
+          <td style="color:#8B5CF6;font-weight:500">${t._puntos||'—'}</td>
+          <td>${minFmt(t._frMin)}</td>
+          <td>${minFmt(t._resMin)}</td>
+          <td>${new Date(t.created_at).toLocaleDateString('es-ES')}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="7" style="color:#aaa;text-align:center;padding:1rem">Sin tickets en este período</td></tr>'
+    }</tbody>
+  </table>
+  </div>`;
+
+  ['evol_'+tecnico.id, 'slaEvol_'+tecnico.id].forEach(k => {
+    if (charts[k]) { charts[k].destroy(); delete charts[k]; }
+  });
+
+  const c1 = document.getElementById(`chartEvol_${tecnico.id}`);
+  if (c1) {
+    charts['evol_'+tecnico.id] = new Chart(c1, {
+      data: { labels: pLabels, datasets: [
+        { type:'bar', label:'Tickets', data:pData.map(d=>d.total),  backgroundColor:'#378ADD', yAxisID:'y' },
+        { type:'bar', label:'Puntos',  data:pData.map(d=>d.puntos), backgroundColor:'#8B5CF6', yAxisID:'y' }
+      ]},
+      options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ display:false } },
+        scales:{ y:{ title:{ display:true, text:'Tickets / Puntos' } } } }
+    });
+  }
+
+  const c2 = document.getElementById(`chartSlaEvol_${tecnico.id}`);
+  if (c2) {
+    charts['slaEvol_'+tecnico.id] = new Chart(c2, {
+      data: { labels: pLabels, datasets: [
+        { type:'line', label:'SLA 1 %', data:pData.map(d=>d.sla1), borderColor:'#1D9E75', backgroundColor:'#1D9E7520', tension:0.3, fill:true, pointRadius:4 },
+        { type:'line', label:'SLA 2 %', data:pData.map(d=>d.sla2), borderColor:'#BA7517', backgroundColor:'#BA751720', tension:0.3, fill:true, pointRadius:4 }
+      ]},
+      options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ display:false } },
+        scales:{ y:{ min:0, max:100, title:{ display:true, text:'SLA %' }, ticks:{ callback:v=>v+'%' } } } }
+    });
+  }
+}
+
+// ── Construcción de UI ─────────────────────────────────────
+function buildUI() {
+  const tabBar = document.getElementById('tabBar');
+  const panels = document.getElementById('panels');
+
+  panels.innerHTML = '<div id="panel-general" class="panel active"><div class="loading">Cargando...</div></div>';
+
+  TECNICOS.forEach(t => {
+    const btn = document.createElement('button');
+    btn.className    = 'tab';
+    btn.dataset.tab  = `tech-${t.id}`;
+    btn.textContent  = t.name.split(' ')[0];
+    btn.title        = t.name;
+    tabBar.appendChild(btn);
+
+    const div = document.createElement('div');
+    div.id        = `panel-tech-${t.id}`;
+    div.className = 'panel';
+    div.innerHTML = '<div class="loading">Esperando datos...</div>';
+    panels.appendChild(div);
+  });
+
+  document.querySelectorAll('.tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(b=>b.classList.remove('active'));
+      btn.classList.add('active');
+      const tab = btn.dataset.tab;
+      document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+      document.getElementById(`panel-${tab}`).classList.add('active');
+      if (statsData) {
+        if (tab === 'general') renderGeneralPanel(currentPeriod);
+        else {
+          const tec = TECNICOS.find(t=>`tech-${t.id}`===tab);
+          if (tec) renderTechPanel(tec, currentPeriod);
+        }
+      }
+    });
+  });
+
+  document.querySelectorAll('.period-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.period-btn').forEach(b=>b.classList.remove('active'));
+      btn.classList.add('active');
+      currentPeriod = btn.dataset.period;
+      if (statsData) {
+        const active = document.querySelector('.tab.active')?.dataset.tab;
+        if (!active || active === 'general') renderGeneralPanel(currentPeriod);
+        else {
+          const tec = TECNICOS.find(t=>`tech-${t.id}`===active);
+          if (tec) renderTechPanel(tec, currentPeriod);
+        }
+      }
+    });
+  });
+}
+
+// ── Carga de datos con polling ─────────────────────────────
+async function fetchStats() {
+  const r = await fetch(`${PROXY}/api/stats?t=${Date.now()}`);
+  if (r.status === 202) {
+    const d = await r.json();
+    setStatus('loading', `Cargando... ${d.stage || ''} ${d.partial ? '('+d.partial+' tickets)' : ''}`);
+    return null;
+  }
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+async function pollUntilReady() {
+  if (pollTimer) clearInterval(pollTimer);
+  setStatus('loading', 'Conectando con el servidor...');
+
+  const attempt = async () => {
+    try {
+      const data = await fetchStats();
+      if (data) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+        statsData = data;
+        setStatus('ok', `Datos cargados · ${new Date().toLocaleTimeString('es-ES')}`);
+        renderGeneralPanel(currentPeriod);
+      }
+    } catch(e) {
+      setStatus('error', `Error: ${e.message} — ¿Está activo el servidor? (node server.js)`);
+    }
+  };
+
+  await attempt();
+  if (!statsData) {
+    pollTimer = setInterval(attempt, 15000); // reintenta cada 15s mientras carga
+  }
+}
+
+async function reloadData() {
+  try {
+    setStatus('loading', 'Solicitando recarga...');
+    await fetch(`${PROXY}/api/reload`);
+    statsData = null;
+    document.getElementById('panel-general').innerHTML = '<div class="loading">Recargando datos de Zendesk...</div>';
+    await new Promise(res => setTimeout(res, 2000));
+    pollUntilReady();
+  } catch(e) {
+    setStatus('error', `No se puede contactar con el servidor: ${e.message}`);
+  }
+}
+
+buildUI();
+pollUntilReady();
+</script>
+</body>
+</html>

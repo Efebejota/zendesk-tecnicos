@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Llamadas Externas — MP Ascensores TAT</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f6fa; color: #1a1a2e; }
+
+  header { background: #fff; border-bottom: 3px solid #e63946; padding: 18px 32px; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+  header h1 { font-size: 1.3rem; font-weight: 700; color: #1a1a2e; }
+  header h1 span { color: #e63946; }
+  .meta-info { font-size: 0.78rem; color: #888; text-align: right; line-height: 1.6; }
+
+  .toolbar { background: #fff; padding: 14px 32px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #e8e8f0; }
+  .toolbar label { font-size: 0.85rem; font-weight: 600; color: #555; }
+  .period-btn { padding: 7px 16px; border: 2px solid #e0e0e8; border-radius: 20px; background: #fff; font-size: 0.82rem; font-weight: 600; color: #555; cursor: pointer; transition: all 0.15s; }
+  .period-btn:hover { border-color: #e63946; color: #e63946; }
+  .period-btn.active { background: #e63946; border-color: #e63946; color: #fff; }
+  .refresh-btn { margin-left: auto; padding: 7px 18px; background: #1a1a2e; color: #fff; border: none; border-radius: 20px; font-size: 0.82rem; font-weight: 600; cursor: pointer; transition: background 0.15s; }
+  .refresh-btn:hover { background: #e63946; }
+  .refresh-btn:disabled { background: #aaa; cursor: not-allowed; }
+
+  .main { padding: 28px 32px; max-width: 1200px; margin: 0 auto; }
+
+  .kpi-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-bottom: 28px; }
+  .kpi-card { background: #fff; border-radius: 12px; padding: 22px 24px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); border-left: 4px solid #e63946; }
+  .kpi-card.secondary { border-left-color: #457b9d; }
+  .kpi-card.quaternary { border-left-color: #e9c46a; }
+  .kpi-label { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #888; margin-bottom: 8px; }
+  .kpi-value { font-size: 2.2rem; font-weight: 800; color: #1a1a2e; line-height: 1; }
+  .kpi-value span { font-size: 1rem; font-weight: 600; color: #888; }
+  .kpi-sub { font-size: 0.78rem; color: #aaa; margin-top: 6px; }
+
+  .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .panel { background: #fff; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); overflow: hidden; }
+  .panel.full { grid-column: 1 / -1; }
+  .panel-header { padding: 16px 22px; border-bottom: 1px solid #f0f0f8; font-size: 0.88rem; font-weight: 700; color: #1a1a2e; display: flex; align-items: center; gap: 8px; }
+  .panel-header .dot { width: 8px; height: 8px; border-radius: 50%; background: #e63946; }
+
+  .bar-list { padding: 16px 22px; display: flex; flex-direction: column; gap: 14px; }
+  .bar-meta { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 5px; }
+  .bar-name { font-size: 0.82rem; font-weight: 600; color: #333; }
+  .bar-nums { font-size: 0.78rem; color: #888; }
+  .bar-nums strong { color: #e63946; font-size: 0.9rem; }
+  .bar-track { height: 8px; background: #f0f0f8; border-radius: 4px; overflow: hidden; }
+  .bar-fill { height: 100%; background: linear-gradient(90deg, #e63946, #ff6b6b); border-radius: 4px; transition: width 0.6s ease; }
+  .bar-fill.zero { background: #e0e0e8; }
+
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  th { padding: 10px 16px; text-align: left; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #888; border-bottom: 2px solid #f0f0f8; }
+  td { padding: 11px 16px; border-bottom: 1px solid #f8f8fc; color: #333; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #fafafa; }
+  .pct-badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-weight: 700; font-size: 0.8rem; }
+  .pct-high  { background: #fde8ea; color: #e63946; }
+  .pct-mid   { background: #fef4e0; color: #d4a017; }
+  .pct-low   { background: #e8f5e9; color: #2a9d8f; }
+  .pct-zero  { background: #f0f0f8; color: #aaa; }
+
+  .status-bar { background: #fff8f0; border: 1px solid #ffe0b2; border-radius: 8px; padding: 10px 18px; font-size: 0.8rem; color: #b45309; margin-bottom: 20px; display: none; }
+  .loading-overlay { text-align: center; padding: 60px; color: #aaa; font-size: 0.9rem; }
+  .spinner { display: inline-block; width: 28px; height: 28px; border: 3px solid #f0f0f8; border-top-color: #e63946; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 12px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .error-box { background: #fde8ea; border-radius: 8px; padding: 16px 20px; color: #c0392b; font-size: 0.85rem; margin-bottom: 20px; display: none; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>📞 Llamadas Externas <span>TAT</span></h1>
+  <div class="meta-info" id="metaInfo">Cargando datos...</div>
+</header>
+
+<div class="toolbar">
+  <label>Período:</label>
+  <button class="period-btn active" data-period="current_week">Semana actual</button>
+  <button class="period-btn" data-period="last_week">Semana pasada</button>
+  <button class="period-btn" data-period="current_month">Mes actual</button>
+  <button class="period-btn" data-period="last_month">Mes anterior</button>
+  <button class="period-btn" data-period="year">Año completo</button>
+  <button class="refresh-btn" id="refreshBtn" onclick="loadData()">↻ Actualizar</button>
+</div>
+
+<div class="main">
+  <div class="status-bar" id="statusBar"></div>
+  <div class="error-box" id="errorBox"></div>
+  <div id="content">
+    <div class="loading-overlay">
+      <div class="spinner"></div><br>Cargando datos...
+    </div>
+  </div>
+</div>
+
+<script>
+const PROXY = 'http://localhost:3001';
+let currentPeriod = 'current_week';
+
+document.querySelectorAll('.period-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentPeriod = btn.dataset.period;
+    loadData();
+  });
+});
+
+async function loadData() {
+  const btn = document.getElementById('refreshBtn');
+  btn.disabled = true;
+  btn.textContent = '↻ Cargando...';
+  document.getElementById('errorBox').style.display = 'none';
+  document.getElementById('statusBar').style.display = 'none';
+
+  try {
+    const r = await fetch(`${PROXY}/api/llamadas/stats?period=${currentPeriod}`);
+    if (r.status === 202) {
+      showStatus('El servidor está cargando datos. Intenta en unos segundos.');
+      return;
+    }
+    if (!r.ok) throw new Error('Error ' + r.status);
+    const data = await r.json();
+    renderDashboard(data);
+    updateMeta(data.llamadasMeta);
+  } catch(e) {
+    showError('No se puede conectar al proxy. ¿Está corriendo node server.js? — ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '↻ Actualizar';
+  }
+}
+
+function renderDashboard(data) {
+  const { total, conLlamada, pct, byAgent, desde, hasta } = data;
+
+  const agentes = Object.entries(byAgent || {})
+    .filter(([,v]) => v.total > 0)
+    .sort((a,b) => (b[1].pct||0) - (a[1].pct||0));
+
+  const maxPct = agentes.length ? Math.max(...agentes.map(([,v]) => v.pct||0)) : 100;
+
+  document.getElementById('content').innerHTML = `
+    <div class="kpi-row">
+      <div class="kpi-card">
+        <div class="kpi-label">% Con Llamada</div>
+        <div class="kpi-value">${pct ?? '—'}<span>%</span></div>
+        <div class="kpi-sub">${desde} → ${hasta}</div>
+      </div>
+      <div class="kpi-card secondary">
+        <div class="kpi-label">Tickets con llamada</div>
+        <div class="kpi-value">${conLlamada ?? '—'}</div>
+        <div class="kpi-sub">de ${total} tickets totales</div>
+      </div>
+      <div class="kpi-card quaternary">
+        <div class="kpi-label">Técnicos activos</div>
+        <div class="kpi-value">${agentes.length}</div>
+        <div class="kpi-sub">con tickets en el período</div>
+      </div>
+    </div>
+
+    <div class="panels">
+      <div class="panel">
+        <div class="panel-header"><div class="dot"></div>% Llamada por técnico</div>
+        <div class="bar-list">
+          ${agentes.map(([name, v]) => `
+            <div class="bar-item">
+              <div class="bar-meta">
+                <span class="bar-name">${name}</span>
+                <span class="bar-nums"><strong>${v.pct ?? 0}%</strong> · ${v.conLlamada}/${v.total}</span>
+              </div>
+              <div class="bar-track">
+                <div class="bar-fill ${v.pct === 0 ? 'zero' : ''}" style="width:${maxPct > 0 ? (v.pct/maxPct*100) : 0}%"></div>
+              </div>
+            </div>
+          `).join('')}
+          ${agentes.length === 0 ? '<div style="color:#aaa;font-size:0.85rem">Sin datos para este período</div>' : ''}
+        </div>
+      </div>
+
+      <div class="panel full">
+        <div class="panel-header"><div class="dot"></div>Detalle por técnico</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Técnico</th>
+                <th>Total tickets</th>
+                <th>Con llamada</th>
+                <th>% Llamada</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${agentes.map(([name, v], i) => {
+                const p = v.pct ?? 0;
+                const cls = p >= 20 ? 'pct-high' : p >= 10 ? 'pct-mid' : p > 0 ? 'pct-low' : 'pct-zero';
+                return `<tr>
+                  <td style="color:#aaa">${i+1}</td>
+                  <td><strong>${name}</strong></td>
+                  <td>${v.total}</td>
+                  <td>${v.conLlamada}</td>
+                  <td><span class="pct-badge ${cls}">${p}%</span></td>
+                </tr>`;
+              }).join('')}
+              ${agentes.length === 0 ? '<tr><td colspan="5" style="text-align:center;color:#aaa;padding:30px">Sin datos</td></tr>' : ''}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function updateMeta(meta) {
+  if (!meta) return;
+  const scan = meta.lastScan ? new Date(meta.lastScan).toLocaleString('es-ES') : '—';
+  document.getElementById('metaInfo').innerHTML = `Último scan: ${scan}<br>Histórico: ${meta.totalTickets ?? '—'} tickets · ${meta.conLlamada ?? '—'} con llamada`;
+}
+
+function showStatus(msg) {
+  const el = document.getElementById('statusBar');
+  el.style.display = 'block';
+  el.textContent = '⏳ ' + msg;
+}
+
+function showError(msg) {
+  const el = document.getElementById('errorBox');
+  el.style.display = 'block';
+  el.textContent = '⚠️ ' + msg;
+  document.getElementById('content').innerHTML = '';
+}
+
+loadData();
+</script>
+</body>
+</html>
