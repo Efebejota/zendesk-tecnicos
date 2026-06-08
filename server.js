@@ -282,6 +282,7 @@ async function loadInBackground(force = false) {
 }
 
 // ── Endpoints ─────────────────────────────────────────────────────────────────
+app.use(express.static(path.join(__dirname, 'dashboards')));
 app.use(express.static(path.join(__dirname)));
 
 app.get('/health', (req, res) => {
