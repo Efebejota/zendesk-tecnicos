@@ -60,7 +60,7 @@ function tieneLlamada(ticketId) {
 
 // ── Campos personalizados ────────────────────────────────────────────────────
 const CF_TIPO_CLIENTE = 23076303407645;
-const CF_PUNTOS       = 19324034186285;
+const CF_PUNTOS       = 19324034176285;
 
 // ── Técnicos ─────────────────────────────────────────────────────────────────
 const TECNICOS = [
