@@ -10,18 +10,21 @@ body{font-family:system-ui,sans-serif;background:#f0f2f5;min-height:100vh;displa
 .logo{font-size:13px;font-weight:600;color:#888;letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px;text-align:center}
 h1{font-size:22px;font-weight:700;color:#1a1a2e;margin-bottom:6px;text-align:center}
 .sub{font-size:13px;color:#888;margin-bottom:40px;text-align:center}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;width:100%;max-width:560px}
+.grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;width:100%;max-width:820px}
 .card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:28px 24px;text-decoration:none;color:inherit;transition:all .18s;display:flex;flex-direction:column;gap:12px}
 .card:hover{transform:translateY(-3px);box-shadow:0 8px 24px rgba(0,0,0,.08);border-color:#378ADD}
 .card-icon{font-size:32px}
 .card-title{font-size:16px;font-weight:600;color:#111}
 .card-desc{font-size:12px;color:#888;line-height:1.5}
-.card-badge{display:inline-flex;align-items:center;gap:6px;background:#EAF3DE;color:#3B6D11;font-size:11px;font-weight:500;padding:3px 10px;border-radius:20px;width:fit-content}
+.card-badge{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:500;padding:3px 10px;border-radius:20px;width:fit-content}
+.badge-green{background:#EAF3DE;color:#3B6D11}
+.badge-blue{background:#E6F0FB;color:#1A5CB0}
+.badge-red{background:#FDEAEA;color:#B01A1A}
 .status{margin-top:40px;font-size:11px;color:#aaa;display:flex;align-items:center;gap:8px}
 .dot{width:7px;height:7px;border-radius:50%;background:#ccc}
 .dot.ok{background:#1D9E75}.dot.loading{background:#BA7517;animation:pulse 1.2s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-@media(max-width:480px){.grid{grid-template-columns:1fr}}
+@media(max-width:640px){.grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -35,13 +38,19 @@ h1{font-size:22px;font-weight:700;color:#1a1a2e;margin-bottom:6px;text-align:cen
     <div class="card-icon">📊</div>
     <div class="card-title">KPI Dashboard</div>
     <div class="card-desc">Tickets, tiempos, SLAs, canales, clientes y datos de dirección. Vista mensual y acumulada.</div>
-    <div class="card-badge">Vista global</div>
+    <div class="card-badge badge-green">Vista global</div>
   </a>
   <a class="card" href="/dashboard.html">
     <div class="card-icon">👥</div>
     <div class="card-title">Dashboard Técnicos</div>
     <div class="card-desc">KPIs individuales por técnico: tickets válidos, puntos, SLA tipo 1 y 2, evolución y ranking.</div>
-    <div class="card-badge">Por técnico</div>
+    <div class="card-badge badge-blue">Por técnico</div>
+  </a>
+  <a class="card" href="/dashboard_llamadas.html">
+    <div class="card-icon">📞</div>
+    <div class="card-title">Llamadas Externas</div>
+    <div class="card-desc">% de tickets con llamada saliente por técnico y período. Histórico semanal y acumulado.</div>
+    <div class="card-badge badge-red">Llamadas TAT</div>
   </a>
 </div>
 
