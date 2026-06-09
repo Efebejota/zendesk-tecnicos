@@ -558,7 +558,7 @@ async function loadData() {
 
 async function _loadDataAttempt() {
   try {
-    const [tr, mr] = await Promise.all([fetch(PROXY+'/tickets'), fetch(PROXY+'/metrics')]);
+    const [tr, mr] = await Promise.all([fetch(PROXY+'/tickets?_='+Date.now()), fetch(PROXY+'/metrics?_='+Date.now())]);
 
     if(tr.status === 202) {
       // Proxy todavía cargando — consultar /health para mostrar progreso
