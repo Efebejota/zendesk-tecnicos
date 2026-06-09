@@ -20,9 +20,13 @@ h1{font-size:22px;font-weight:700;color:#1a1a2e;margin-bottom:6px;text-align:cen
 .badge-green{background:#EAF3DE;color:#3B6D11}
 .badge-blue{background:#E6F0FB;color:#1A5CB0}
 .badge-red{background:#FDEAEA;color:#B01A1A}
-.status{margin-top:40px;font-size:11px;color:#aaa;display:flex;align-items:center;gap:8px}
-.dot{width:7px;height:7px;border-radius:50%;background:#ccc}
+.status{margin-top:40px;font-size:11px;color:#aaa;display:flex;flex-direction:column;align-items:center;gap:8px;width:100%;max-width:340px}
+.status-row{display:flex;align-items:center;gap:8px}
+.dot{width:7px;height:7px;border-radius:50%;background:#ccc;flex-shrink:0}
 .dot.ok{background:#1D9E75}.dot.loading{background:#BA7517;animation:pulse 1.2s infinite}
+.progress-wrap{width:100%;background:#e5e7eb;border-radius:20px;height:6px;overflow:hidden;display:none}
+.progress-bar{height:100%;background:linear-gradient(90deg,#BA7517,#f0a500);border-radius:20px;transition:width 0.6s ease}
+.progress-label{font-size:11px;color:#BA7517;font-weight:600}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 @media(max-width:640px){.grid{grid-template-columns:1fr}}
 </style>
@@ -55,8 +59,14 @@ h1{font-size:22px;font-weight:700;color:#1a1a2e;margin-bottom:6px;text-align:cen
 </div>
 
 <div class="status">
-  <div class="dot" id="dot"></div>
-  <span id="stxt">Comprobando servidor...</span>
+  <div class="status-row">
+    <div class="dot" id="dot"></div>
+    <span id="stxt">Comprobando servidor...</span>
+    <span class="progress-label" id="pctLabel"></span>
+  </div>
+  <div class="progress-wrap" id="progressWrap">
+    <div class="progress-bar" id="progressBar" style="width:0%"></div>
+  </div>
 </div>
 
 <script>
@@ -66,13 +76,29 @@ async function checkHealth() {
     const d = await r.json();
     const dot = document.getElementById('dot');
     const txt = document.getElementById('stxt');
+    const wrap = document.getElementById('progressWrap');
+    const bar = document.getElementById('progressBar');
+    const lbl = document.getElementById('pctLabel');
+
     if (d.loadingStage === 'done') {
       dot.className = 'dot ok';
-      txt.textContent = `Servidor activo · ${d.cachedTickets.toLocaleString()} tickets cargados`;
+      txt.textContent = 'Servidor activo · ' + d.cachedTickets.toLocaleString() + ' tickets cargados';
+      wrap.style.display = 'none';
+      lbl.textContent = '';
     } else {
       dot.className = 'dot loading';
-      txt.textContent = `Cargando datos... (${d.ticketsPartial.toLocaleString()} tickets)`;
-      setTimeout(checkHealth, 10000);
+      const total = d.checkpoint && d.checkpoint.tickets ? d.checkpoint.tickets : 0;
+      const partial = d.ticketsPartial || 0;
+      if (total > 0) {
+        const pct = Math.min(Math.round(partial / total * 100), 99);
+        wrap.style.display = 'block';
+        bar.style.width = pct + '%';
+        lbl.textContent = pct + '%';
+        txt.textContent = 'Cargando... (' + partial.toLocaleString() + ' / ' + total.toLocaleString() + ')';
+      } else {
+        txt.textContent = 'Cargando datos... (' + partial.toLocaleString() + ' tickets)';
+      }
+      setTimeout(checkHealth, 5000);
     }
   } catch(e) {
     document.getElementById('dot').className = 'dot';
