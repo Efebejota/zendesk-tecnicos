@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KPI v2 (canon) — MP Ascensores</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f4f5f7; color: #1a1a2e; font-size: 13px; }
+
+#topbar { background: #fff; border-bottom: 1px solid #e0e4ec; padding: 14px 22px; display: flex; align-items: center; justify-content: space-between; }
+#topbar h1 { font-size: 16px; font-weight: 700; }
+#topbar h1 .v2 { background: #1e3a6e; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-left: 8px; vertical-align: middle; }
+.cache-info { font-size: 11px; color: #8899bb; }
+.btn { background: #1e3a6e; color: #fff; border: none; padding: 7px 14px; border-radius: 6px; font-size: 12px; cursor: pointer; margin-left: 6px; }
+.btn:hover { background: #2a50a0; }
+.btn.secondary { background: #fff; color: #4e6080; border: 1px solid #dde3ee; }
+.btn.secondary:hover { background: #eef2f8; }
+
+.tabs { background: #fff; padding: 0 22px; border-bottom: 1px solid #e0e4ec; display: flex; gap: 0; }
+.tab { padding: 12px 18px; cursor: pointer; border: none; background: transparent; color: #666; font-size: 13px; border-bottom: 2px solid transparent; }
+.tab.active { color: #1e3a6e; border-bottom-color: #1e3a6e; font-weight: 600; }
+.tab:hover:not(.active) { color: #1a1a2e; }
+
+#content { padding: 20px 22px; max-width: 1400px; margin: 0 auto; }
+.info-bar { background: #eef2f8; border-radius: 6px; padding: 10px 14px; font-size: 12px; color: #4e6080; margin-bottom: 18px; line-height: 1.6; }
+.info-bar strong { color: #1e3a6e; }
+.info-bar.canon { background: #f0f6ff; border-left: 4px solid #1e3a6e; }
+
+.kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+.kpi-grid-5 { grid-template-columns: repeat(5, 1fr); }
+.kpi-card { background: #fff; border-radius: 8px; padding: 14px 16px; border-top: 3px solid #ccc; }
+.kpi-card.blue { border-top-color: #1e3a6e; }
+.kpi-card.green { border-top-color: #27ae60; }
+.kpi-card.purple { border-top-color: #8e44ad; }
+.kpi-card.red { border-top-color: #e74c3c; }
+.kpi-card.orange { border-top-color: #e67e22; }
+.kpi-card.gray { border-top-color: #8899bb; }
+.kpi-label { font-size: 9px; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; color: #8899bb; margin-bottom: 6px; }
+.kpi-value { font-size: 26px; font-weight: 700; line-height: 1; margin-bottom: 4px; }
+.kpi-card.blue .kpi-value { color: #1e3a6e; }
+.kpi-card.green .kpi-value { color: #27ae60; }
+.kpi-card.purple .kpi-value { color: #8e44ad; }
+.kpi-card.red .kpi-value { color: #e74c3c; }
+.kpi-card.orange .kpi-value { color: #e67e22; }
+.kpi-card.gray .kpi-value { color: #8899bb; }
+.kpi-sub { font-size: 10px; color: #8899bb; line-height: 1.4; }
+
+.section { background: #fff; border-radius: 8px; padding: 18px 20px; margin-bottom: 16px; }
+.section h2 { font-size: 14px; font-weight: 600; color: #1a1a2e; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 2px solid #1e3a6e; }
+
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+thead tr { background: #f8fafd; }
+th { padding: 8px 12px; text-align: left; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px; color: #4e6080; border-bottom: 1px solid #dde3ee; }
+th.right, td.right { text-align: right; }
+td { padding: 8px 12px; border-bottom: 1px solid #f0f2f7; color: #2a3550; }
+tr:last-child td { border-bottom: none; }
+.green { color: #27ae60; font-weight: 600; }
+.red { color: #e74c3c; font-weight: 600; }
+.gray { color: #8899bb; }
+.blue { color: #1e3a6e; font-weight: 600; }
+
+.charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px; }
+.chart-card { background: #fff; border-radius: 8px; padding: 14px 16px; }
+.chart-title { font-size: 10px; font-weight: 700; text-transform: uppercase; color: #8899bb; margin-bottom: 10px; letter-spacing: 0.4px; }
+.chart-container { position: relative; height: 220px; }
+
+#loading { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 300px; gap: 14px; }
+.spinner { width: 32px; height: 32px; border: 3px solid #e0e4ec; border-top-color: #1e3a6e; border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+#error-box { background: #fdecea; border-left: 4px solid #e74c3c; border-radius: 6px; padding: 14px 16px; color: #c0392b; font-size: 13px; margin: 16px 0; display: none; }
+
+.compare-note { font-size: 11px; color: #b45309; background: #fff8f0; padding: 8px 12px; border-radius: 5px; margin-top: 8px; border-left: 3px solid #e67e22; }
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <h1>KPI Dashboard <span class="v2">v2 · canon</span></h1>
+  <div>
+    <span class="cache-info" id="cache-info"></span>
+    <a href="kpi.html" class="btn secondary" style="text-decoration:none">← KPI v1 (referencia)</a>
+    <button class="btn" onclick="loadCurrent()">↻ Actualizar</button>
+  </div>
+</div>
+
+<div class="tabs">
+  <button class="tab active" data-period="current_month">Mes Actual</button>
+  <button class="tab" data-period="last_month">Último Mes Cerrado</button>
+  <button class="tab" data-period="year">Acumulado Año</button>
+  <button class="tab" data-period="current_week">Semana Actual</button>
+  <button class="tab" data-period="last_week">Semana Pasada</button>
+</div>
+
+<div id="content">
+  <div id="loading"><div class="spinner"></div><p style="color:#8899bb">Conectando con el servidor...</p></div>
+  <div id="dashboard" style="display:none"></div>
+  <div id="error-box"></div>
+</div>
+
+<script>
+const PROXY = window.location.origin;
+const STD_DIA = 48;
+
+// Días laborables L-V hasta una fecha dada (inclusive) dentro de su mes
+function diasLabHasta(year, month, day) {
+  let c = 0;
+  for (let d = 1; d <= day; d++) {
+    const dow = new Date(year, month, d).getDay();
+    if (dow >= 1 && dow <= 5) c++;
+  }
+  return c;
+}
+
+// Días laborables en un mes completo
+function diasLabMes(year, month) {
+  const last = new Date(year, month + 1, 0).getDate();
+  return diasLabHasta(year, month, last);
+}
+
+// Días laborables YTD (hasta hoy del año actual)
+function diasLabYTD() {
+  const now = new Date();
+  const y = now.getFullYear(), m = now.getMonth(), d = now.getDate();
+  let c = 0;
+  for (let mm = 0; mm < m; mm++) c += diasLabMes(y, mm);
+  c += diasLabHasta(y, m, d);
+  return c;
+}
+
+// Días laborables totales del año
+function diasLabAnio(year) {
+  let c = 0;
+  for (let m = 0; m < 12; m++) c += diasLabMes(year, m);
+  return c;
+}
+
+function fmtPct(v, std) {
+  if (v == null || std == null || std === 0) return '—';
+  const desv = v - std;
+  return (desv > 0 ? '+' : '') + desv.toFixed(1) + 'pp';
+}
+
+let currentPeriod = 'current_month';
+let _retryDelay = 15000;
+let _seq = 0;
+
+document.querySelectorAll('.tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    btn.classList.add('active');
+    currentPeriod = btn.dataset.period;
+    loadCurrent();
+  });
+});
+
+function loadCurrent() {
+  _seq++;
+  _retryDelay = 15000;
+  showLoading();
+  document.getElementById('error-box').style.display = 'none';
+  fetchAndRender(_seq);
+}
+
+function showLoading() {
+  document.getElementById('loading').style.display = 'flex';
+  document.getElementById('dashboard').style.display = 'none';
+}
+
+function showError(msg) {
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('dashboard').style.display = 'none';
+  const eb = document.getElementById('error-box');
+  eb.style.display = 'block';
+  eb.innerHTML = `<strong>Error</strong><br><small>${msg}</small><br><br>
+    <button class="btn" onclick="loadCurrent()">Reintentar</button>`;
+}
+
+async function fetchAndRender(seq) {
+  if (seq !== _seq) return;
+  try {
+    const r = await fetch(`${PROXY}/api/kpi?period=${currentPeriod}&_=${Date.now()}`, { cache: 'no-store' });
+    if (r.status === 202) {
+      const d = await r.json().catch(() => ({}));
+      const stage = d.stage || '?';
+      const partial = d.partial || 0;
+      document.getElementById('loading').innerHTML = `
+        <div class="spinner"></div>
+        <p style="color:#1e3a6e;font-weight:600">Servidor cargando datos... etapa: ${stage}</p>
+        <p style="font-size:11px;color:#8899bb">${partial > 0 ? partial + ' tickets cargados' : ''}</p>
+        <p style="font-size:11px;color:#4e9af1">Próximo intento en ${Math.round(_retryDelay/1000)}s</p>`;
+      const delay = _retryDelay;
+      _retryDelay = Math.min(_retryDelay * 2, 60000);
+      setTimeout(() => fetchAndRender(seq), delay);
+      return;
+    }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    render(data);
+  } catch (e) {
+    showError(e.message);
+  }
+}
+
+function render(d) {
+  document.getElementById('loading').style.display = 'none';
+  Object.values(Chart.instances || {}).forEach(c => c.destroy());
+
+  // Calcular std del período según tipo
+  const now = new Date();
+  let stdPeriodo, descPeriodo, etiquetaStd;
+  const start = new Date(d.desde + 'T00:00:00');
+  const end = new Date(d.hasta + 'T23:59:59');
+
+  if (d.period === 'current_month') {
+    const y = start.getFullYear(), m = start.getMonth(), today = now.getDate();
+    const diasLab = diasLabHasta(y, m, Math.min(today, new Date(y, m + 1, 0).getDate()));
+    stdPeriodo = diasLab * STD_DIA;
+    descPeriodo = `Mes actual hasta hoy · ${diasLab} días lab.`;
+    etiquetaStd = `Std parcial`;
+  } else if (d.period === 'last_month') {
+    const y = start.getFullYear(), m = start.getMonth();
+    const diasLab = diasLabMes(y, m);
+    stdPeriodo = diasLab * STD_DIA;
+    descPeriodo = `Último mes cerrado · ${diasLab} días lab.`;
+    etiquetaStd = `Std mensual`;
+  } else if (d.period === 'year') {
+    const diasLab = diasLabYTD();
+    stdPeriodo = diasLab * STD_DIA;
+    descPeriodo = `Acumulado YTD · ${diasLab} días lab.`;
+    etiquetaStd = `Std YTD`;
+  } else { // weeks
+    // Estimar días laborables en el rango (más simple: contar)
+    let c = 0;
+    for (let dt = new Date(start); dt <= end; dt.setDate(dt.getDate() + 1)) {
+      const dow = dt.getDay();
+      if (dow >= 1 && dow <= 5) c++;
+    }
+    stdPeriodo = c * STD_DIA;
+    descPeriodo = `${d.period === 'current_week' ? 'Semana actual' : 'Semana pasada'} · ${c} días lab.`;
+    etiquetaStd = `Std semanal`;
+  }
+
+  const g = d.general;
+  const desv = g.total - stdPeriodo;
+  const desvCls = desv >= 0 ? 'orange' : 'red';
+  const pctResol = g.total > 0 ? (g.resolved / g.total * 100).toFixed(1) : '—';
+
+  const sla1Cls = g.sla1 != null && g.sla1 >= 50 ? 'green' : 'red';
+  const sla2Cls = g.sla2 != null && g.sla2 >= 75 ? 'green' : 'red';
+
+  let html = `
+    <div class="info-bar canon">
+      <strong>📡 Fuente única: /api/kpi</strong> · período <strong>${d.desde}</strong> → <strong>${d.hasta}</strong> · ${descPeriodo}
+      <br>Universo canónico: <strong>${d.universo.totalKpi}</strong> tickets KPI (T1+T2 del equipo TAT)
+      &nbsp;·&nbsp; total equipo (todos los tipos): ${d.universo.totalTeam}
+      &nbsp;·&nbsp; brutos en Zendesk: ${d.universo.totalRaw}
+    </div>
+
+    <div class="kpi-grid kpi-grid-5">
+      <div class="kpi-card blue">
+        <div class="kpi-label">Volumen KPI</div>
+        <div class="kpi-value">${g.total}</div>
+        <div class="kpi-sub">T1 (${g.tipo1cnt}) + T2 (${g.tipo2cnt})</div>
+      </div>
+      <div class="kpi-card green">
+        <div class="kpi-label">Resueltos</div>
+        <div class="kpi-value">${g.resolved}</div>
+        <div class="kpi-sub">${pctResol}% del total</div>
+      </div>
+      <div class="kpi-card gray">
+        <div class="kpi-label">${etiquetaStd}</div>
+        <div class="kpi-value">${stdPeriodo}</div>
+        <div class="kpi-sub">${STD_DIA}/día lab.</div>
+      </div>
+      <div class="kpi-card ${desvCls}">
+        <div class="kpi-label">Desviación</div>
+        <div class="kpi-value">${desv > 0 ? '+' : ''}${desv}</div>
+        <div class="kpi-sub">${stdPeriodo > 0 ? ((desv/stdPeriodo)*100).toFixed(1) + '%' : '—'} vs std</div>
+      </div>
+      <div class="kpi-card purple">
+        <div class="kpi-label">Puntos</div>
+        <div class="kpi-value">${g.puntos}</div>
+        <div class="kpi-sub">resueltos en período</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>⏱️ Tiempos y SLA (minutos laborables)</h2>
+      <div class="kpi-grid">
+        <div class="kpi-card ${sla1Cls}">
+          <div class="kpi-label">SLA Tipo 1 (≤15 min)</div>
+          <div class="kpi-value">${g.sla1 != null ? g.sla1 + '%' : '—'}</div>
+          <div class="kpi-sub">${g.sla1Den} tickets · std 50% · ${fmtPct(g.sla1, 50)}</div>
+        </div>
+        <div class="kpi-card ${sla2Cls}">
+          <div class="kpi-label">SLA Tipo 2 (≤25 min)</div>
+          <div class="kpi-value">${g.sla2 != null ? g.sla2 + '%' : '—'}</div>
+          <div class="kpi-sub">${g.sla2Den} tickets · std 75% · ${fmtPct(g.sla2, 75)}</div>
+        </div>
+        <div class="kpi-card blue">
+          <div class="kpi-label">T. medio 1ª resp. T1</div>
+          <div class="kpi-value">${g.avgFR1 != null ? g.avgFR1 : '—'}<span style="font-size:14px;color:#8899bb"> min</span></div>
+          <div class="kpi-sub">Cuidado: media sesgada por casos extremos</div>
+        </div>
+        <div class="kpi-card purple">
+          <div class="kpi-label">T. medio 1ª resp. T2</div>
+          <div class="kpi-value">${g.avgFR2 != null ? g.avgFR2 : '—'}<span style="font-size:14px;color:#8899bb"> min</span></div>
+          <div class="kpi-sub">Target 25 min lab.</div>
+        </div>
+      </div>
+      <table>
+        <thead><tr><th>Tipo</th><th class="right">Tickets</th><th class="right">T. medio 1ª resp.</th><th class="right">T. medio resolución</th><th class="right">Target SLA</th><th class="right">% cumplido</th><th class="right">Std %</th><th class="right">Desv.</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>Tipo 1</strong></td>
+            <td class="right">${g.tipo1cnt}</td>
+            <td class="right ${g.avgFR1 != null && g.avgFR1 <= 15 ? 'green' : 'red'}">${g.avgFR1 != null ? g.avgFR1 + ' min' : '—'}</td>
+            <td class="right">${g.avgRes1 != null ? g.avgRes1 + ' min (' + (g.avgRes1/60).toFixed(1) + 'h)' : '—'}</td>
+            <td class="right gray">15 min</td>
+            <td class="right ${sla1Cls}">${g.sla1 != null ? g.sla1 + '%' : '—'}</td>
+            <td class="right gray">50%</td>
+            <td class="right ${sla1Cls}">${fmtPct(g.sla1, 50)}</td>
+          </tr>
+          <tr>
+            <td><strong>Tipo 2</strong></td>
+            <td class="right">${g.tipo2cnt}</td>
+            <td class="right ${g.avgFR2 != null && g.avgFR2 <= 25 ? 'green' : 'red'}">${g.avgFR2 != null ? g.avgFR2 + ' min' : '—'}</td>
+            <td class="right">${g.avgRes2 != null ? g.avgRes2 + ' min (' + (g.avgRes2/60).toFixed(1) + 'h)' : '—'}</td>
+            <td class="right gray">25 min</td>
+            <td class="right ${sla2Cls}">${g.sla2 != null ? g.sla2 + '%' : '—'}</td>
+            <td class="right gray">75%</td>
+            <td class="right ${sla2Cls}">${fmtPct(g.sla2, 75)}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="charts-grid">
+      <div class="chart-card">
+        <div class="chart-title">Composición del universo</div>
+        <div class="chart-container"><canvas id="ch-universo"></canvas></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-title">% SLA por tipo vs estándar</div>
+        <div class="chart-container"><canvas id="ch-sla"></canvas></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>🏷️ Tickets por Tipo (universo del equipo)</h2>
+      <table>
+        <thead><tr><th>Tipo</th><th class="right">Tickets</th><th class="right">% del equipo</th><th class="right">¿Entra en KPI?</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>Tipo 1</strong></td>
+            <td class="right blue">${d.byTipo.tipo1}</td>
+            <td class="right">${d.universo.totalTeam > 0 ? (d.byTipo.tipo1/d.universo.totalTeam*100).toFixed(1) : '0'}%</td>
+            <td class="right green">Sí</td>
+          </tr>
+          <tr>
+            <td><strong>Tipo 2</strong></td>
+            <td class="right blue">${d.byTipo.tipo2}</td>
+            <td class="right">${d.universo.totalTeam > 0 ? (d.byTipo.tipo2/d.universo.totalTeam*100).toFixed(1) : '0'}%</td>
+            <td class="right green">Sí</td>
+          </tr>
+          <tr>
+            <td><strong>Tipo 3</strong></td>
+            <td class="right gray">${d.byTipo.tipo3}</td>
+            <td class="right">${d.universo.totalTeam > 0 ? (d.byTipo.tipo3/d.universo.totalTeam*100).toFixed(1) : '0'}%</td>
+            <td class="right gray">No (informativo)</td>
+          </tr>
+          <tr>
+            <td><strong>Sin Tipo</strong></td>
+            <td class="right gray">${d.byTipo.sinTipo}</td>
+            <td class="right">${d.universo.totalTeam > 0 ? (d.byTipo.sinTipo/d.universo.totalTeam*100).toFixed(1) : '0'}%</td>
+            <td class="right gray">No (informativo)</td>
+          </tr>
+        </tbody>
+      </table>
+      ${d.informativos.sinTipo > 0 || d.informativos.invalidByTipif > 0 ?
+        `<div class="compare-note">⚠️ Datos a revisar: ${d.informativos.sinTipo} tickets sin tipo cliente · ${d.informativos.invalidByTipif} marcados como invalid_ticket (ya excluidos del KPI)</div>` : ''}
+    </div>
+
+    <div class="info-bar">
+      <strong>📐 Definiciones canónicas usadas en esta vista:</strong>
+      <br>· Universo: solo tickets asignados al equipo TAT (15 técnicos + 2 buzones, sin manager)
+      <br>· KPI principal: del equipo + Tipo 1 o Tipo 2 (Tipo 3 y Sin Tipo quedan informativos)
+      <br>· Tiempos y SLA: solo minutos laborables (business). Sin fallback a calendario
+      <br>· Válidos: excluye merge, deleted, asunto "INVALID TICKET" y tipificación invalid_ticket
+    </div>
+  `;
+
+  const dash = document.getElementById('dashboard');
+  dash.innerHTML = html;
+  dash.style.display = 'block';
+
+  // Charts
+  new Chart(document.getElementById('ch-universo'), {
+    type: 'doughnut',
+    data: {
+      labels: ['Tipo 1 (KPI)', 'Tipo 2 (KPI)', 'Tipo 3 (informativo)', 'Sin Tipo (informativo)'],
+      datasets: [{
+        data: [d.byTipo.tipo1, d.byTipo.tipo2, d.byTipo.tipo3, d.byTipo.sinTipo],
+        backgroundColor: ['#1e3a6e', '#8e44ad', '#8899bb', '#dde3ee'],
+        borderWidth: 2, borderColor: '#fff'
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'right', labels: { font: { size: 11 } } } }
+    }
+  });
+
+  new Chart(document.getElementById('ch-sla'), {
+    type: 'bar',
+    data: {
+      labels: ['Tipo 1', 'Tipo 2'],
+      datasets: [
+        { label: '% SLA actual', data: [g.sla1, g.sla2], backgroundColor: ['#1e3a6e', '#8e44ad'], borderRadius: 4 },
+        { label: 'Estándar', data: [50, 75], type: 'line', borderColor: '#e74c3c', borderDash: [5,3], pointRadius: 5, fill: false }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'bottom', labels: { font: { size: 11 } } } },
+      scales: { y: { min: 0, max: 100, ticks: { callback: v => v + '%' } } }
+    }
+  });
+
+  // Cache info
+  document.getElementById('cache-info').textContent =
+    `${d.universo.totalKpi} tickets KPI · actualizado ${new Date().toLocaleTimeString('es-ES', {hour:'2-digit',minute:'2-digit'})}`;
+}
+
+loadCurrent();
+</script>
+</body>
+</html>
