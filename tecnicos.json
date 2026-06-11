@@ -1,0 +1,23 @@
+{
+  "_comment": "Fuente única de verdad del equipo TAT. Editar este fichero y redesplegar Railway actualiza los tres dashboards. Roles: 'tech' (técnico individual, cuenta en agregados y en ranking), 'mailbox' (buzón colectivo, cuenta en agregados pero etiquetado como buzón en rankings), 'manager' (gestor, NO cuenta en agregados, solo visible en el dashboard de técnicos como referencia).",
+  "tecnicos": [
+    { "id": "22510761073437", "name": "Juan Miguel Urbano",   "email": "jmu@mpascensores.com",            "role": "tech" },
+    { "id": "18823504352925", "name": "Amine Laaguidi",       "email": "AL@mpascensores.com",             "role": "tech" },
+    { "id": "22511063320093", "name": "Javier Sosa",          "email": "jsj@mpascensores.com",            "role": "tech" },
+    { "id": "19330437521693", "name": "Eduardo Robles",       "email": "erg@mpascensores.com",            "role": "tech" },
+    { "id": "22510403813533", "name": "Carlos Perez",         "email": "cpo@mpascensores.com",            "role": "tech" },
+    { "id": "27405062363805", "name": "Raidel Alba",          "email": "rah@mpascensores.com",            "role": "tech" },
+    { "id": "35441820724509", "name": "Michael Prieto",       "email": "mpri@mpascensores.com",           "role": "tech" },
+    { "id": "19330468060189", "name": "Pedro Calvo",          "email": "pjce@mplifts.com",                "role": "tech" },
+    { "id": "22829521407261", "name": "Ruud Barten",          "email": "mphollandrb@mplifts.com",         "role": "tech" },
+    { "id": "24252949539869", "name": "Mar Durán",            "email": "md@mpascensores.com",             "role": "tech" },
+    { "id": "26600613366301", "name": "Alexis Didelot",       "email": "ad@mpascenseurs.com",             "role": "tech" },
+    { "id": "31969556341917", "name": "Steve McDonald",       "email": "sm@mplifts.com",                  "role": "tech" },
+    { "id": "25238078751389", "name": "Nicklas Jonsson",      "email": "nj@mpsweden.se",                  "role": "tech" },
+    { "id": "26600564602525", "name": "Antonio Gómez",        "email": "mpcentroag@mpascensores.com",     "role": "tech" },
+    { "id": "22194513778589", "name": "Nikolao",              "email": "nikolao@mpascensores.com",        "role": "tech" },
+    { "id": "34726482176285", "name": "Multimarca",           "email": "multibrand@mplifts.com",          "role": "mailbox" },
+    { "id": "35916785932317", "name": "Technical Team (MP)",  "email": "technicalteam@mpascensores.com",  "role": "mailbox" },
+    { "id": "24254682817949", "name": "Fernando Becerra",     "email": "fbj@mpascensores.com",            "role": "manager" }
+  ]
+}

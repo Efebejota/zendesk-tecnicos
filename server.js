@@ -1,16 +1,23 @@
 /**
- * MP Ascensores — Proxy Zendesk unificado v4
- * Novedades v4:
- *  - ETags desactivados + Cache-Control: no-store en todos los endpoints de datos
- *    (mata los 304 con datos obsoletos de raíz, sin depender del cache-buster del cliente)
- *  - Cache-Control: no-cache en los HTML estáticos (el navegador revalida siempre
- *    y recibe la versión nueva tras cada deploy)
- *  - Auto-refresh del caché principal (incremental, cada 30 min comprueba TTL de 6h)
- *  - Auto-scan de llamadas: al arrancar (cuando el caché está listo) y cada 6h,
- *    escanea la ventana desde el último scan (margen 3 días) hasta hoy
- *  - DATA_DIR opcional para persistir llamadas.json/checkpoint.json en un volumen
+ * MP Ascensores — Proxy Zendesk unificado v5
+ * Novedades v5:
+ *  - Lista de técnicos en tecnicos.json (fuente única de verdad)
+ *  - Módulo canon.js: filtros y cálculos compartidos para que los tres
+ *    dashboards usen las mismas reglas y devuelvan los mismos números
+ *  - Nuevo endpoint /api/kpi con KPIs cocinados al canon (el kpi.html podrá
+ *    consumirlo en lugar de descargar 14k tickets en bruto)
+ *  - /api/stats y /api/llamadas/stats migrados al canon (mismo universo,
+ *    misma validación, mismo concepto de "técnico del equipo")
+ *  - "manager" (Fernando) excluido de agregados; visible solo en su tarjeta
+ *    del dashboard de Técnicos como referencia personal
+ *  - Mailboxes (Multimarca, Technical Team) suman en agregados y aparecen
+ *    en ranking marcados con role='mailbox' (el cliente puede pintarlos aparte)
+ * Heredado de v4:
+ *  - ETags off + Cache-Control: no-store en datos, no-cache en HTML
+ *  - Auto-refresh del caché (6h) y auto-scan de llamadas (6h)
+ *  - DATA_DIR opcional para checkpoint.json/llamadas.json/tecnicos.json
+ *
  * Puerto: 3001 (local) | process.env.PORT (Railway)
- * Uso: node server.js
  */
 
 const express = require('express');
@@ -18,15 +25,13 @@ const cors    = require('cors');
 const fetch   = require('node-fetch');
 const path    = require('path');
 const fs      = require('fs');
+const canon   = require('./canon');
 
 const app = express();
 app.use(cors({ origin: '*' }));
 app.use(express.json());
-
-// v4: sin ETags — evita respuestas 304 condicionales en endpoints JSON
 app.set('etag', false);
 
-// v4: no-store en todos los endpoints de datos
 const DATA_PATHS = new Set(['/tickets', '/metrics', '/all', '/refresh', '/health']);
 app.use((req, res, next) => {
   if (req.path.startsWith('/api') || DATA_PATHS.has(req.path)) {
@@ -38,8 +43,6 @@ app.use((req, res, next) => {
 });
 
 // ── Credenciales ─────────────────────────────────────────────────────────────
-// Acepta ambos juegos de nombres de variables (ZD_* y Z*) por compatibilidad
-// con la configuración actual de Railway (ZDOMAIN/ZEMAIL/ZTOKEN).
 const SUBDOMAIN = process.env.ZD_SUBDOMAIN || process.env.ZDOMAIN || 'mpascensoresatc';
 const EMAIL     = process.env.ZD_EMAIL     || process.env.ZEMAIL  || 'fbj@mpascensores.com';
 const TOKEN     = process.env.ZD_TOKEN     || process.env.ZTOKEN  || '3LpjcUPFnB9Fgk7mQwCRcVBHE17rz1GsJhBcZyXK';
@@ -47,15 +50,11 @@ const AUTH      = Buffer.from(EMAIL + '/token:' + TOKEN).toString('base64');
 const BASE      = `https://${SUBDOMAIN}.zendesk.com/api/v2`;
 const HEADERS   = { Authorization: 'Basic ' + AUTH, 'Content-Type': 'application/json' };
 
-// ── Ficheros de persistencia ──────────────────────────────────────────────────
-// DATA_DIR: si en Railway se monta un volumen (p.ej. /data) y se define la
-// variable DATA_DIR=/data, llamadas.json y checkpoint.json sobreviven a los
-// redeploys. Sin la variable, todo funciona como hasta ahora (__dirname).
+// ── Persistencia ─────────────────────────────────────────────────────────────
 const DATA_DIR        = process.env.DATA_DIR || __dirname;
 const LLAMADAS_FILE   = path.join(DATA_DIR, 'llamadas.json');
 const CHECKPOINT_FILE = path.join(DATA_DIR, 'checkpoint.json');
 
-// Si DATA_DIR es un volumen vacío pero el repo trae ficheros semilla, copiarlos.
 function seedFromRepo(targetFile, name) {
   if (DATA_DIR === __dirname) return;
   const seed = path.join(__dirname, name);
@@ -67,7 +66,19 @@ function seedFromRepo(targetFile, name) {
 seedFromRepo(LLAMADAS_FILE, 'llamadas.json');
 seedFromRepo(CHECKPOINT_FILE, 'checkpoint.json');
 
-// ── Checkpoint ────────────────────────────────────────────────────────────────
+// ── Equipo TAT (tecnicos.json) ───────────────────────────────────────────────
+let TECNICOS = canon.loadTecnicos(DATA_DIR);
+let TEAM     = canon.buildTeamSets(TECNICOS);
+function reloadTecnicos() {
+  try {
+    TECNICOS = canon.loadTecnicos(DATA_DIR);
+    TEAM = canon.buildTeamSets(TECNICOS);
+    console.log(`Equipo recargado: ${TECNICOS.length} entradas (${TEAM.rankingIds.size} tech, ${TEAM.mailboxIds.size} mailbox).`);
+    return true;
+  } catch (e) { console.warn('No se pudo recargar tecnicos.json:', e.message); return false; }
+}
+
+// ── Checkpoint y llamadas ────────────────────────────────────────────────────
 function loadCheckpoint() {
   if (!fs.existsSync(CHECKPOINT_FILE)) return null;
   try {
@@ -85,7 +96,6 @@ function saveCheckpoint(tickets, afterUrl) {
   } catch (e) { console.warn('No se pudo guardar checkpoint:', e.message); }
 }
 
-// ── Llamadas ──────────────────────────────────────────────────────────────────
 function loadLlamadas() {
   if (!fs.existsSync(LLAMADAS_FILE)) return { tickets: {}, meta: {} };
   try { return JSON.parse(fs.readFileSync(LLAMADAS_FILE, 'utf8')); }
@@ -100,53 +110,17 @@ function saveLlamadas() {
   catch (e) { console.warn('No se pudo guardar llamadas.json:', e.message); }
 }
 
-function tieneLlamada(ticketId) {
-  return llamadasCache.tickets[String(ticketId)] === true;
-}
-
-// ── Campos personalizados ────────────────────────────────────────────────────
-const CF_TIPO_CLIENTE = 23076303407645;
-const CF_PUNTOS       = 19324034176285;
-
-// ── Técnicos ─────────────────────────────────────────────────────────────────
-const TECNICOS = [
-  { id: '18823504352925', name: 'Amine Laaguidi',        email: 'AL@mpascensores.com' },
-  { id: '22511063320093', name: 'Javier Sosa Jimenez',   email: 'jsj@mpascensores.com' },
-  { id: '19330437521693', name: 'Eduardo Robles Gamito', email: 'erg@mpascensores.com' },
-  { id: '19330468060189', name: 'Pedro Calvo Estallo',   email: 'pjce@mplifts.com' },
-  { id: '22510403813533', name: 'Carlos Perez Osuna',    email: 'cpo@mpascensores.com' },
-  { id: '27405062363805', name: 'Raidel Alba',           email: 'rah@mpascensores.com' },
-  { id: '35441820724509', name: 'Michael Prieto',        email: 'mpri@mpascensores.com' },
-  { id: '22829521407261', name: 'Ruud Barten',           email: 'mphollandrb@mplifts.com' },
-  { id: '27939255391261', name: 'Kamal Arrad',           email: 'ka@mplifts.com' },
-  { id: '24252949539869', name: 'Mar Durán',             email: 'md@mpascensores.com' },
-  { id: '25081523536157', name: 'Andreas Scheidl',       email: 'as@mpascensores.com' },
-  { id: '26600613366301', name: 'Alexis Didelot',        email: 'ad@mpascenseurs.com' },
-  { id: '25238078751389', name: 'Nicklas Jonsson',       email: 'nj@mpsweden.se' },
-  { id: '26600564602525', name: 'Antonio Gómez',         email: 'mpcentroag@mpascensores.com' },
-  { id: '34726482176285', name: 'Multimarca',            email: 'multibrand@mplifts.com' },
-  { id: '24254682817949', name: 'Fernando Becerra',      email: 'fbj@mpascensores.com' },
-];
-const TECH_BY_ID   = {};
-const TECH_BY_NAME = {};
-TECNICOS.forEach(t => { TECH_BY_ID[t.id] = t; TECH_BY_NAME[t.name] = t; });
+function tieneLlamada(ticketId) { return llamadasCache.tickets[String(ticketId)] === true; }
 
 // ── Caché ────────────────────────────────────────────────────────────────────
 const CACHE_TTL = 6 * 60 * 60 * 1000;
-
 let cache = {
-  tickets:      [],
-  metrics:      [],
-  organizations:[],
-  loadedAt:     null,
-  loading:      false,
-  loadingStage: 'idle',
-  ticketsPartial: 0,
-  lastError:    null,
-  stats:        null,
+  tickets: [], metrics: [], organizations: [],
+  loadedAt: null, loading: false, loadingStage: 'idle',
+  ticketsPartial: 0, lastError: null, stats: null,
 };
 
-// ── Helpers de fetch ─────────────────────────────────────────────────────────
+// ── Fetch ────────────────────────────────────────────────────────────────────
 async function fetchAll(startUrl) {
   let items = [];
   let url = startUrl;
@@ -168,12 +142,10 @@ async function fetchAll(startUrl) {
   return items;
 }
 
-// ── Carga incremental con checkpoint ─────────────────────────────────────────
 async function fetchIncremental() {
   const cp = loadCheckpoint();
   let items = cp ? [...cp.tickets] : [];
   let startUrl;
-
   if (cp && cp.afterUrl) {
     console.log(`Reanudando desde checkpoint: ${items.length} tickets ya cargados`);
     startUrl = cp.afterUrl;
@@ -181,11 +153,7 @@ async function fetchIncremental() {
     console.log('Primera carga completa desde el inicio...');
     startUrl = BASE + '/incremental/tickets/cursor.json?start_time=0&per_page=100';
   }
-
-  let url = startUrl;
-  let page = 0;
-  let lastAfterUrl = cp?.afterUrl || null;
-
+  let url = startUrl, page = 0, lastAfterUrl = cp?.afterUrl || null;
   while (url) {
     page++;
     if (page % 10 === 0) console.log(`  Tickets: página ${page} (${items.length} total)...`);
@@ -200,131 +168,103 @@ async function fetchIncremental() {
     const data = await r.json();
     if (data.tickets) {
       items = items.concat(data.tickets);
-      cache.ticketsPartial = items.filter(isValidTicket).length;
+      cache.ticketsPartial = items.filter(canon.isValidTicket).length;
     }
     lastAfterUrl = data.after_url || null;
-    if (data.end_of_stream === true) {
-      saveCheckpoint(items, lastAfterUrl);
-      url = null;
-    } else {
-      url = lastAfterUrl;
-    }
+    if (data.end_of_stream === true) { saveCheckpoint(items, lastAfterUrl); url = null; }
+    else { url = lastAfterUrl; }
     if (url) await new Promise(res => setTimeout(res, 300));
   }
   return items;
 }
 
-// ── Filtrado de tickets válidos ───────────────────────────────────────────────
-function isValidTicket(t) {
-  if ((t.tags || []).includes('closed_by_merge')) return false;
-  if (t.status === 'deleted') return false;
-  if ((t.subject || '').toUpperCase().includes('INVALID TICKET')) return false;
-  return true;
-}
-
-function getField(t, fieldId) {
-  return (t.custom_fields || []).find(f => f.id === fieldId)?.value ?? null;
-}
-
-function getTipoCliente(t) { return getField(t, CF_TIPO_CLIENTE); }
-function getPuntos(t)       { return getField(t, CF_PUNTOS); }
-
-// ── Filtro de período ────────────────────────────────────────────────────────
-function getDateRange(period) {
-  const now = new Date();
-  let start, end;
-  if (period === 'current_week') {
-    const day = now.getDay() || 7;
-    const mon = new Date(now); mon.setDate(now.getDate() - day + 1); mon.setHours(0,0,0,0);
-    start = mon; end = now;
-  } else if (period === 'last_week') {
-    const day = now.getDay() || 7;
-    const mon = new Date(now); mon.setDate(now.getDate() - day - 6); mon.setHours(0,0,0,0);
-    const sun = new Date(mon); sun.setDate(mon.getDate() + 6); sun.setHours(23,59,59,999);
-    start = mon; end = sun;
-  } else if (period === 'current_month') {
-    start = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
-    end   = now;
-  } else if (period === 'last_month') {
-    start = new Date(now.getFullYear(), now.getMonth() - 1, 1, 0, 0, 0, 0);
-    end   = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
-  } else {
-    start = new Date(now.getFullYear(), 0, 1, 0, 0, 0, 0);
-    end   = now;
-  }
-  return { start, end };
-}
-
-function inPeriod(ticket, start, end) {
-  const d = new Date(ticket.created_at);
-  return d >= start && d <= end;
-}
-
-// ── Métricas por técnico ─────────────────────────────────────────────────────
-// Tiempos y SLA SOLO con minutos laborables (business). Sin fallback a calendar:
-// si un ticket no tiene métrica business, queda fuera del cálculo.
-function agentMetrics(tickets, metricsById) {
-  const tipo1 = tickets.filter(t => getTipoCliente(t) === 'tipo_cliente_1');
-  const tipo2 = tickets.filter(t => getTipoCliente(t) === 'tipo_cliente_2');
-  const resolved = tickets.filter(t => t.status === 'solved' || t.status === 'closed').length;
-  const puntos   = tickets.reduce((s, t) => s + (parseInt(getPuntos(t)) || 0), 0);
-  const fr1  = tipo1.map(t => metricsById[t.id]?.reply_time_in_minutes?.business ?? null).filter(v => v !== null);
-  const fr2  = tipo2.map(t => metricsById[t.id]?.reply_time_in_minutes?.business ?? null).filter(v => v !== null);
-  const res1 = tipo1.map(t => metricsById[t.id]?.full_resolution_time_in_minutes?.business ?? null).filter(v => v !== null);
-  const res2 = tipo2.map(t => metricsById[t.id]?.full_resolution_time_in_minutes?.business ?? null).filter(v => v !== null);
-  const avg  = arr => arr.length ? Math.round(arr.reduce((a,b)=>a+b,0)/arr.length) : null;
-  const sla1pct = tipo1.length ? Math.round(tipo1.filter(t => { const v = metricsById[t.id]?.reply_time_in_minutes?.business; return v != null && v <= 15; }).length / tipo1.length * 100) : null;
-  const sla2pct = tipo2.length ? Math.round(tipo2.filter(t => { const v = metricsById[t.id]?.reply_time_in_minutes?.business; return v != null && v <= 25; }).length / tipo2.length * 100) : null;
-  return { total: tickets.length, resolved, puntos, avgFR: avg([...fr1,...fr2]), avgFR1: avg(fr1), avgFR2: avg(fr2), avgRes: avg([...res1,...res2]), avgRes1: avg(res1), avgRes2: avg(res2), sla1: sla1pct, sla2: sla2pct, tipo1cnt: tipo1.length, tipo2cnt: tipo2.length };
-}
-
-// ── Cálculo de estadísticas globales ─────────────────────────────────────────
+// ── /api/stats (dashboard de Técnicos) — usa canon ──────────────────────────
 function computeStats() {
   const metricsById = {};
   cache.metrics.forEach(m => { metricsById[m.ticket_id] = m; });
-  const validTickets = cache.tickets.filter(isValidTicket);
-  const techIds = new Set(TECNICOS.map(t => String(t.id)));
-  const techTickets = validTickets.filter(t => techIds.has(String(t.assignee_id)));
   const result = {};
   for (const period of ['last_week', 'current_week', 'current_month', 'last_month', 'year']) {
-    const { start, end } = getDateRange(period);
-    const periodAll  = validTickets.filter(t => inPeriod(t, start, end));
-    const periodTech = techTickets.filter(t => inPeriod(t, start, end));
-    const TIPOS_VALIDOS = ['tipo_cliente_1', 'tipo_cliente_2'];
-    const filtered = periodTech.filter(t => TIPOS_VALIDOS.includes(getTipoCliente(t)));
+    const { start, end } = canon.getDateRange(period);
+    const allValid    = cache.tickets.filter(canon.isValidTicket);
+    const periodAll   = allValid.filter(t => canon.inPeriod(t, start, end));
+    const periodTeam  = canon.teamTickets(periodAll, TEAM);
+    const periodKpi   = canon.kpiTickets(periodTeam);
     const byAgent = {}, byAgentTickets = {};
     TECNICOS.forEach(tec => {
-      const mine = filtered.filter(t => String(t.assignee_id) === tec.id);
-      byAgent[tec.name] = agentMetrics(mine, metricsById);
-      byAgentTickets[tec.id] = mine.sort((a,b) => new Date(b.created_at) - new Date(a.created_at)).slice(0,50).map(t => ({
+      // El manager (Fernando) ve sus propios tickets pero no entra en agregados
+      const baseForThis = tec.role === 'manager' ? periodAll : periodKpi;
+      const mine = baseForThis.filter(t => String(t.assignee_id) === tec.id
+        && (tec.role !== 'manager' || ['tipo_cliente_1','tipo_cliente_2'].includes(canon.getTipoCliente(t))));
+      byAgent[tec.name] = { ...canon.computeAgentMetrics(mine, metricsById), role: tec.role };
+      byAgentTickets[tec.id] = mine.sort((a,b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 50).map(t => ({
         id: t.id, subject: t.subject, status: t.status, created_at: t.created_at,
-        _puntos: parseInt(getPuntos(t)) || null, _tipo: getTipoCliente(t),
-        _frMin: metricsById[t.id]?.reply_time_in_minutes?.business ?? null,
-        _resMin: metricsById[t.id]?.full_resolution_time_in_minutes?.business ?? null,
+        _puntos: canon.getPuntos(t) || null,
+        _tipo: canon.getTipoCliente(t),
+        _frMin: canon.getBusinessFR(t, metricsById),
+        _resMin: canon.getBusinessRes(t, metricsById),
       }));
     });
-    result[period] = { totalRaw: periodAll.length, general: agentMetrics(filtered, metricsById), byAgent, techTickets: byAgentTickets };
+    result[period] = {
+      totalRaw: periodAll.length,
+      general: canon.computePeriodSummary(periodKpi, metricsById),
+      byAgent, techTickets: byAgentTickets,
+    };
   }
   return result;
 }
 
-// ── Carga en background ──────────────────────────────────────────────────────
+// ── /api/kpi (NUEVO) ─────────────────────────────────────────────────────────
+function computeKpiPanel(period) {
+  const metricsById = {};
+  cache.metrics.forEach(m => { metricsById[m.ticket_id] = m; });
+  const { start, end } = canon.getDateRange(period);
+  const allValid   = cache.tickets.filter(canon.isValidTicket);
+  const periodAll  = allValid.filter(t => canon.inPeriod(t, start, end));
+  const periodTeam = canon.teamTickets(periodAll, TEAM);
+  const periodKpi  = canon.kpiTickets(periodTeam);
+  const general = canon.computePeriodSummary(periodKpi, metricsById);
+  const byTipo = {};
+  ['tipo_cliente_1', 'tipo_cliente_2', 'tipo_cliente_3', null].forEach(k => {
+    byTipo[k || 'sin_tipo'] = periodTeam.filter(t => canon.getTipoCliente(t) === k).length;
+  });
+  const informativos = {
+    tipo3:    byTipo.tipo_cliente_3,
+    sinTipo:  byTipo.sin_tipo,
+    invalidByTipif: periodAll.filter(t => canon.getTipificacion(t) === 'invalid_ticket').length,
+  };
+  return {
+    period,
+    desde: start.toISOString().slice(0,10),
+    hasta: end.toISOString().slice(0,10),
+    universo: {
+      totalRaw: periodAll.length,
+      totalTeam: periodTeam.length,
+      totalKpi: periodKpi.length,
+    },
+    general,
+    byTipo: {
+      tipo1: byTipo.tipo_cliente_1, tipo2: byTipo.tipo_cliente_2,
+      tipo3: byTipo.tipo_cliente_3, sinTipo: byTipo.sin_tipo,
+    },
+    informativos,
+  };
+}
+
+// ── Carga ─────────────────────────────────────────────────────────────────────
 async function loadInBackground(force = false) {
   if (cache.loading) { console.log('Ya hay una carga en curso.'); return; }
   const now = Date.now();
   if (!force && cache.loadedAt && (now - cache.loadedAt < CACHE_TTL) && cache.tickets.length > 0) return;
-
   if (force && fs.existsSync(CHECKPOINT_FILE)) {
     try { fs.unlinkSync(CHECKPOINT_FILE); console.log('Checkpoint eliminado (recarga forzada).'); }
     catch(e) { console.warn('No se pudo eliminar checkpoint:', e.message); }
   }
-
   cache.loading = true; cache.loadingStage = 'tickets'; cache.lastError = null;
   console.log('\n=== Iniciando carga ===');
   try {
     console.log('Cargando tickets...');
     const allTickets = await fetchIncremental();
-    cache.tickets = allTickets.filter(isValidTicket);
+    cache.tickets = allTickets.filter(canon.isValidTicket);
     console.log(`Tickets válidos: ${cache.tickets.length}`);
     cache.loadingStage = 'metrics';
     console.log('Cargando métricas...');
@@ -351,7 +291,7 @@ async function loadInBackground(force = false) {
   } finally { cache.loading = false; }
 }
 
-// ── Scan de llamadas (función interna, usada por endpoint y scheduler) ───────
+// ── Scan llamadas ────────────────────────────────────────────────────────────
 let scanState = { running: false, lastRun: null, lastResult: null };
 
 async function runScanLlamadas(desde, hasta, origen = 'manual') {
@@ -361,10 +301,10 @@ async function runScanLlamadas(desde, hasta, origen = 'manual') {
   try {
     const desdeTs = Math.floor(new Date(desde + 'T00:00:00Z').getTime() / 1000);
     const hastaTs = Math.floor(new Date(hasta + 'T23:59:59Z').getTime() / 1000);
-    const techIds = new Set(TECNICOS.map(t => String(t.id)));
+    const allIds = TEAM.allIds;
     let ticketsRango = cache.tickets.filter(t => {
       const ts = Math.floor(new Date(t.created_at).getTime() / 1000);
-      return ts >= desdeTs && ts <= hastaTs && techIds.has(String(t.assignee_id));
+      return ts >= desdeTs && ts <= hastaTs && allIds.has(String(t.assignee_id));
     });
     if (ticketsRango.length === 0) {
       console.log('Caché vacía, consultando Zendesk directamente para el scan...');
@@ -375,7 +315,7 @@ async function runScanLlamadas(desde, hasta, origen = 'manual') {
         const data = await r.json();
         const batch = (data.tickets || []).filter(t => {
           const ts = Math.floor(new Date(t.created_at).getTime() / 1000);
-          return ts <= hastaTs && techIds.has(String(t.assignee_id)) && isValidTicket(t);
+          return ts <= hastaTs && allIds.has(String(t.assignee_id)) && canon.isValidTicket(t);
         });
         ticketsRango = ticketsRango.concat(batch);
         const last = data.tickets?.[data.tickets.length - 1];
@@ -398,14 +338,13 @@ async function runScanLlamadas(desde, hasta, origen = 'manual') {
           llamadasCache.tickets[id] = tiene;
           if (tiene) conLlamada++;
           consultados++;
-          if (consultados % 50 === 0) saveLlamadas(); // progreso parcial
+          if (consultados % 50 === 0) saveLlamadas();
         }
       } catch(e) { /* skip */ }
       await new Promise(r => setTimeout(r, 350));
     }
     llamadasCache.meta = {
-      ...llamadasCache.meta,
-      lastScan: new Date().toISOString(),
+      ...llamadasCache.meta, lastScan: new Date().toISOString(),
       lastScanRango: { desde, hasta },
       totalTickets: Object.keys(llamadasCache.tickets).length,
       conLlamada: Object.values(llamadasCache.tickets).filter(Boolean).length,
@@ -417,49 +356,69 @@ async function runScanLlamadas(desde, hasta, origen = 'manual') {
   } catch(e) {
     console.error('Error en scan llamadas:', e.message);
     scanState.lastResult = 'error: ' + e.message;
-  } finally {
-    scanState.running = false;
-  }
+  } finally { scanState.running = false; }
 }
 
-// Scheduler: comprueba cada minuto; ejecuta scan si el caché está listo y han
-// pasado >6h desde el último scan registrado en llamadas.json.
+// Schedulers
 const SCAN_INTERVAL = 6 * 60 * 60 * 1000;
 setInterval(() => {
   if (!cache.stats || cache.loading || scanState.running) return;
   const last = llamadasCache.meta?.lastScan ? new Date(llamadasCache.meta.lastScan).getTime() : 0;
   if (Date.now() - last < SCAN_INTERVAL) return;
-  // Ventana: desde el último scan menos 3 días de margen (máx. 30 días atrás)
   const desdeMs = Math.max(last - 3 * 864e5, Date.now() - 30 * 864e5);
   const desde = new Date(desdeMs).toISOString().slice(0, 10);
   const hasta = new Date().toISOString().slice(0, 10);
   runScanLlamadas(desde, hasta, 'auto');
 }, 60 * 1000);
 
-// Auto-refresh del caché principal: cada 30 min comprueba el TTL (6h).
-// loadInBackground no toca cache.tickets hasta terminar, así que los dashboards
-// siguen sirviendo los datos anteriores durante la recarga.
 setInterval(() => { loadInBackground(false); }, 30 * 60 * 1000);
 
-// ── Servir estáticos ──────────────────────────────────────────────────────────
-// v4: los HTML se sirven con no-cache para que el navegador revalide siempre
-// y reciba la versión nueva tras cada deploy (los JS/CSS van inline en los HTML).
+// ── Estáticos ────────────────────────────────────────────────────────────────
 const staticOpts = {
   etag: false,
-  setHeaders: (res, filePath) => {
-    if (filePath.endsWith('.html')) res.set('Cache-Control', 'no-cache, must-revalidate');
-  },
+  setHeaders: (res, filePath) => { if (filePath.endsWith('.html')) res.set('Cache-Control', 'no-cache, must-revalidate'); },
 };
 app.use(express.static(path.join(__dirname, 'dashboards'), staticOpts));
 app.use(express.static(path.join(__dirname), staticOpts));
 
-// ── Endpoints ─────────────────────────────────────────────────────────────────
+// ── Endpoints ────────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
   let cp = null;
   if (fs.existsSync(CHECKPOINT_FILE)) {
     try { const raw = JSON.parse(fs.readFileSync(CHECKPOINT_FILE,'utf8')); cp = { tickets: raw.tickets?.length || 0, savedAt: raw.savedAt, hasAfterUrl: !!raw.afterUrl }; } catch(e) {}
   }
-  res.json({ ok: true, version: 'v4', time: new Date().toISOString(), cachedTickets: cache.tickets.length, cachedMetrics: cache.metrics.length, cacheAge: cache.loadedAt ? Math.round((Date.now()-cache.loadedAt)/1000)+'s' : 'none', loading: cache.loading, loadingStage: cache.loadingStage, ticketsPartial: cache.ticketsPartial, lastError: cache.lastError, statsReady: cache.stats !== null, checkpoint: cp, scanLlamadas: { running: scanState.running, lastRun: scanState.lastRun, lastResult: scanState.lastResult, lastScanMeta: llamadasCache.meta?.lastScan || null } });
+  res.json({
+    ok: true, version: 'v5', time: new Date().toISOString(),
+    equipo: { total: TECNICOS.length, tech: TEAM.rankingIds.size, mailbox: TEAM.mailboxIds.size, manager: TECNICOS.filter(t=>t.role==='manager').length },
+    cachedTickets: cache.tickets.length, cachedMetrics: cache.metrics.length,
+    cacheAge: cache.loadedAt ? Math.round((Date.now()-cache.loadedAt)/1000)+'s' : 'none',
+    loading: cache.loading, loadingStage: cache.loadingStage,
+    ticketsPartial: cache.ticketsPartial, lastError: cache.lastError,
+    statsReady: cache.stats !== null, checkpoint: cp,
+    scanLlamadas: { running: scanState.running, lastRun: scanState.lastRun, lastResult: scanState.lastResult, lastScanMeta: llamadasCache.meta?.lastScan || null },
+  });
+});
+
+app.get('/api/tecnicos', (req, res) => {
+  res.json({ tecnicos: TECNICOS, totals: { total: TECNICOS.length, tech: TEAM.rankingIds.size, mailbox: TEAM.mailboxIds.size } });
+});
+
+app.get('/api/tecnicos/reload', (req, res) => {
+  const ok = reloadTecnicos();
+  if (ok && cache.tickets.length > 0) { cache.stats = computeStats(); console.log('Stats recalculadas con el nuevo equipo.'); }
+  res.json({ ok, tecnicos: TECNICOS.length, message: ok ? 'tecnicos.json recargado y stats recalculadas.' : 'No se pudo recargar.' });
+});
+
+app.get('/api/kpi', (req, res) => {
+  if (!cache.stats) {
+    if (!cache.loading) loadInBackground(false);
+    return res.status(202).json({ error: 'Caché aún cargando', stage: cache.loadingStage, partial: cache.ticketsPartial });
+  }
+  const period = req.query.period || 'current_month';
+  if (!['current_week','last_week','current_month','last_month','year'].includes(period)) {
+    return res.status(400).json({ error: 'period inválido' });
+  }
+  res.json(computeKpiPanel(period));
 });
 
 app.get('/api/stats', (req, res) => {
@@ -480,7 +439,7 @@ app.get('/api/reload', (req, res) => {
 app.get('/api/refresh', (req, res) => {
   cache.tickets = []; cache.metrics = []; cache.stats = null; cache.loadedAt = null;
   loadInBackground(false);
-  res.json({ ok: true, message: 'Recarga incremental iniciada (usando checkpoint).' });
+  res.json({ ok: true, message: 'Recarga incremental iniciada.' });
 });
 
 app.get('/api/ticket/:id', async (req, res) => {
@@ -508,7 +467,7 @@ app.get('/api/ticket-fields', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Endpoints llamadas ────────────────────────────────────────────────────────
+// ── Llamadas ──────────────────────────────────────────────────────────────────
 app.get('/api/llamadas/meta', (req, res) => {
   res.json({ ...(llamadasCache.meta || {}), scanning: scanState.running, statsReady: cache.stats !== null, loadingStage: cache.loadingStage, ticketsPartial: cache.ticketsPartial });
 });
@@ -527,28 +486,34 @@ app.get('/api/llamadas/stats', (req, res) => {
     return res.status(202).json({ error: 'Caché principal aún cargando', stage: cache.loadingStage, partial: cache.ticketsPartial, llamadasMeta: { ...(llamadasCache.meta || {}), scanning: scanState.running } });
   }
   const period = req.query.period || 'current_month';
-  const techIds = new Set(TECNICOS.map(t => String(t.id)));
-  const { start, end } = getDateRange(period);
-  // Universo: TODOS los tickets válidos asignados a técnicos en el período.
-  // Sin filtro por tipo de cliente (alineado con el dashboard de Llamadas Externas).
-  const ticketsPeriod = cache.tickets.filter(t => inPeriod(t, start, end) && techIds.has(String(t.assignee_id)) && isValidTicket(t));
+  const { start, end } = canon.getDateRange(period);
+  const allValid = cache.tickets.filter(canon.isValidTicket);
+  const periodAll = allValid.filter(t => canon.inPeriod(t, start, end));
+  const ticketsPeriod = canon.teamTickets(periodAll, TEAM);
   const total = ticketsPeriod.length;
   const conLlamada = ticketsPeriod.filter(t => tieneLlamada(t.id)).length;
   const byAgent = {};
   TECNICOS.forEach(tec => {
+    if (tec.role === 'manager') return;
     const mine = ticketsPeriod.filter(t => String(t.assignee_id) === tec.id);
     const mineConLlamada = mine.filter(t => tieneLlamada(t.id)).length;
-    if (mine.length > 0) byAgent[tec.name] = { total: mine.length, conLlamada: mineConLlamada, pct: Math.round(mineConLlamada/mine.length*100) };
+    if (mine.length > 0) byAgent[tec.name] = {
+      total: mine.length, conLlamada: mineConLlamada,
+      pct: Math.round(mineConLlamada / mine.length * 100),
+      role: tec.role,
+    };
   });
-  res.json({ period, desde: start.toISOString().slice(0,10), hasta: end.toISOString().slice(0,10), total, conLlamada, pct: total ? Math.round(conLlamada/total*100) : null, byAgent, llamadasMeta: { ...(llamadasCache.meta || {}), scanning: scanState.running } });
+  res.json({
+    period, desde: start.toISOString().slice(0,10), hasta: end.toISOString().slice(0,10),
+    total, conLlamada, pct: total ? Math.round(conLlamada/total*100) : null,
+    byAgent, llamadasMeta: { ...(llamadasCache.meta || {}), scanning: scanState.running },
+  });
 });
 
-// ── Endpoints compatibilidad legacy ──────────────────────────────────────────
+// ── Legacy (mientras el kpi.html siga sin migrar) ────────────────────────────
 app.get('/tickets', (req, res) => {
   if (cache.tickets.length === 0 && !cache.loading) loadInBackground(false);
-  if (cache.tickets.length === 0 && cache.loading) {
-    return res.status(202).json({ tickets: [], total: 0, loading: true, stage: cache.loadingStage, partial: cache.ticketsPartial });
-  }
+  if (cache.tickets.length === 0 && cache.loading) return res.status(202).json({ tickets: [], total: 0, loading: true, stage: cache.loadingStage, partial: cache.ticketsPartial });
   let tickets = cache.tickets;
   if (req.query.month) tickets = tickets.filter(t => (t.created_at||'').startsWith(req.query.month));
   else if (req.query.year) tickets = tickets.filter(t => (t.created_at||'').startsWith(req.query.year));
@@ -557,9 +522,7 @@ app.get('/tickets', (req, res) => {
 
 app.get('/metrics', (req, res) => {
   if (cache.metrics.length === 0 && !cache.loading) loadInBackground(false);
-  if (cache.metrics.length === 0 && cache.loading) {
-    return res.status(202).json({ metrics: [], total: 0, loading: true, stage: cache.loadingStage, partial: cache.ticketsPartial });
-  }
+  if (cache.metrics.length === 0 && cache.loading) return res.status(202).json({ metrics: [], total: 0, loading: true, stage: cache.loadingStage, partial: cache.ticketsPartial });
   res.json({ metrics: cache.metrics, total: cache.metrics.length, cachedAt: cache.loadedAt, loading: cache.loading });
 });
 
@@ -574,9 +537,6 @@ app.get('/all', (req, res) => {
 });
 
 app.get('/refresh', (req, res) => {
-  // v4: el /refresh legacy pasa a ser INCREMENTAL (usa checkpoint). La recarga
-  // completa con borrado de checkpoint queda solo en /api/reload, para evitar
-  // recargas de 20 minutos por error desde los dashboards.
   cache.tickets = []; cache.metrics = []; cache.stats = null; cache.loadedAt = null;
   loadInBackground(false);
   res.json({ ok: true, message: 'Recarga incremental iniciada en background.' });
@@ -593,9 +553,10 @@ app.get('/api/tickets', (req, res) => {
 // ── Arrancar ──────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`\nServidor MP Ascensores v4 activo en puerto ${PORT}`);
-  console.log('Endpoints: /health  /api/stats  /api/reload  /api/refresh  /api/tickets');
-  console.log('Llamadas:  /api/llamadas/stats  /api/llamadas/scan  /api/llamadas/meta');
-  console.log('v4: no-store en datos, no-cache en HTML, auto-refresh 6h, auto-scan llamadas 6h\n');
+  console.log(`\nServidor MP Ascensores v5 activo en puerto ${PORT}`);
+  console.log(`Equipo TAT: ${TECNICOS.length} entradas (${TEAM.rankingIds.size} tech, ${TEAM.mailboxIds.size} mailbox, ${TECNICOS.filter(t=>t.role==='manager').length} manager)`);
+  console.log('Endpoints nuevos: /api/kpi  /api/tecnicos  /api/tecnicos/reload');
+  console.log('Heredados:        /api/stats  /api/llamadas/stats  /api/reload  /api/refresh');
+  console.log('v5: canon.js como fuente única de cálculo para los 3 dashboards\n');
   loadInBackground(false);
 });
