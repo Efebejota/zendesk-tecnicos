@@ -11,6 +11,7 @@
   header h1 { font-size: 1.3rem; font-weight: 700; color: #1a1a2e; }
   header h1 span { color: #e63946; }
   .meta-info { font-size: 0.78rem; color: #888; text-align: right; line-height: 1.6; }
+  .meta-info .scan-badge { display: inline-block; background: #fef4e0; color: #b45309; font-weight: 700; padding: 1px 8px; border-radius: 10px; font-size: 0.72rem; }
   .toolbar { background: #fff; padding: 14px 32px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #e8e8f0; }
   .toolbar label { font-size: 0.85rem; font-weight: 600; color: #555; }
   .period-btn { padding: 7px 16px; border: 2px solid #e0e0e8; border-radius: 20px; background: #fff; font-size: 0.82rem; font-weight: 600; color: #555; cursor: pointer; transition: all 0.15s; }
@@ -71,7 +72,7 @@
   <button class="period-btn active" data-period="current_week">Semana actual</button>
   <button class="period-btn" data-period="last_week">Semana pasada</button>
   <button class="period-btn" data-period="current_month">Mes actual</button>
-  <button class="period-btn" data-period="last_month">Mes anterior</button>
+  <button class="period-btn" data-period="last_month">Último mes cerrado</button>
   <button class="period-btn" data-period="year">Año completo</button>
   <button class="refresh-btn" id="refreshBtn" onclick="loadData()">↻ Actualizar</button>
 </div>
@@ -90,6 +91,7 @@
 const PROXY = 'https://zendesk-tecnicos-production.up.railway.app';
 let currentPeriod = 'current_week';
 let _retryDelay = 15000;
+let _loadSeq = 0; // invalida reintentos pendientes al cambiar de período
 
 document.querySelectorAll('.period-btn').forEach(btn => {
   btn.addEventListener('click', () => {
@@ -107,23 +109,36 @@ async function loadData() {
   document.getElementById('errorBox').style.display = 'none';
   document.getElementById('statusBar').style.display = 'none';
   _retryDelay = 15000;
-  await _loadDataAttempt();
+  _loadSeq++;
+  await _loadDataAttempt(_loadSeq);
 }
 
-async function _loadDataAttempt() {
+async function _loadDataAttempt(seq) {
+  if (seq !== _loadSeq) return; // hay una carga más reciente, abandonar
   try {
-    const r = await fetch(`${PROXY}/api/llamadas/stats?period=${currentPeriod}`);
+    // FIX 304: cache-buster + no-store. El buster hace única cada URL y no-store
+    // impide peticiones condicionales (If-None-Match) que devuelven 304 con caché.
+    const r = await fetch(`${PROXY}/api/llamadas/stats?period=${currentPeriod}&_=${Date.now()}`, { cache: 'no-store' });
     if (r.status === 202) {
-      showStatus(`El servidor está cargando datos. Reintentando en ${Math.round(_retryDelay/1000)}s...`);
+      // Servidor aún cargando el caché principal: mostrar progreso y el último
+      // scan conocido (viene en el cuerpo del 202), y reintentar con backoff.
+      let info = '';
+      try {
+        const d = await r.json();
+        if (d.partial) info = ` (${d.partial} tickets cargados, etapa: ${d.stage || '?'})`;
+        if (d.llamadasMeta) updateMeta(d.llamadasMeta);
+      } catch(_) {}
+      showStatus(`El servidor está recargando datos tras un reinicio${info}. Reintentando en ${Math.round(_retryDelay/1000)}s...`);
       const delay = _retryDelay;
       _retryDelay = Math.min(_retryDelay * 2, 60000);
-      setTimeout(_loadDataAttempt, delay);
+      setTimeout(() => _loadDataAttempt(seq), delay);
       return;
     }
     if (!r.ok) throw new Error('Error ' + r.status);
     const data = await r.json();
     renderDashboard(data);
     updateMeta(data.llamadasMeta);
+    document.getElementById('statusBar').style.display = 'none';
     const btn = document.getElementById('refreshBtn');
     btn.disabled = false;
     btn.textContent = '↻ Actualizar';
@@ -219,7 +234,9 @@ function renderDashboard(data) {
 function updateMeta(meta) {
   if (!meta) return;
   const scan = meta.lastScan ? new Date(meta.lastScan).toLocaleString('es-ES') : '—';
-  document.getElementById('metaInfo').innerHTML = `Último scan: ${scan}<br>Histórico: ${meta.totalTickets ?? '—'} tickets · ${meta.conLlamada ?? '—'} con llamada`;
+  const scanning = meta.scanning ? ' <span class="scan-badge">⟳ escaneando ahora</span>' : '';
+  document.getElementById('metaInfo').innerHTML =
+    `Último scan: ${scan}${scanning}<br>Histórico: ${meta.totalTickets ?? '—'} tickets · ${meta.conLlamada ?? '—'} con llamada`;
 }
 
 function showStatus(msg) {

@@ -1,5 +1,14 @@
 /**
- * MP Ascensores — Proxy Zendesk unificado v3 (con checkpoint)
+ * MP Ascensores — Proxy Zendesk unificado v4
+ * Novedades v4:
+ *  - ETags desactivados + Cache-Control: no-store en todos los endpoints de datos
+ *    (mata los 304 con datos obsoletos de raíz, sin depender del cache-buster del cliente)
+ *  - Cache-Control: no-cache en los HTML estáticos (el navegador revalida siempre
+ *    y recibe la versión nueva tras cada deploy)
+ *  - Auto-refresh del caché principal (incremental, cada 30 min comprueba TTL de 6h)
+ *  - Auto-scan de llamadas: al arrancar (cuando el caché está listo) y cada 6h,
+ *    escanea la ventana desde el último scan (margen 3 días) hasta hoy
+ *  - DATA_DIR opcional para persistir llamadas.json/checkpoint.json en un volumen
  * Puerto: 3001 (local) | process.env.PORT (Railway)
  * Uso: node server.js
  */
@@ -14,17 +23,49 @@ const app = express();
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
+// v4: sin ETags — evita respuestas 304 condicionales en endpoints JSON
+app.set('etag', false);
+
+// v4: no-store en todos los endpoints de datos
+const DATA_PATHS = new Set(['/tickets', '/metrics', '/all', '/refresh', '/health']);
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api') || DATA_PATHS.has(req.path)) {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+  }
+  next();
+});
+
 // ── Credenciales ─────────────────────────────────────────────────────────────
-const SUBDOMAIN = process.env.ZD_SUBDOMAIN || 'mpascensoresatc';
-const EMAIL     = process.env.ZD_EMAIL     || 'fbj@mpascensores.com';
-const TOKEN     = process.env.ZD_TOKEN     || '3LpjcUPFnB9Fgk7mQwCRcVBHE17rz1GsJhBcZyXK';
+// Acepta ambos juegos de nombres de variables (ZD_* y Z*) por compatibilidad
+// con la configuración actual de Railway (ZDOMAIN/ZEMAIL/ZTOKEN).
+const SUBDOMAIN = process.env.ZD_SUBDOMAIN || process.env.ZDOMAIN || 'mpascensoresatc';
+const EMAIL     = process.env.ZD_EMAIL     || process.env.ZEMAIL  || 'fbj@mpascensores.com';
+const TOKEN     = process.env.ZD_TOKEN     || process.env.ZTOKEN  || '3LpjcUPFnB9Fgk7mQwCRcVBHE17rz1GsJhBcZyXK';
 const AUTH      = Buffer.from(EMAIL + '/token:' + TOKEN).toString('base64');
 const BASE      = `https://${SUBDOMAIN}.zendesk.com/api/v2`;
 const HEADERS   = { Authorization: 'Basic ' + AUTH, 'Content-Type': 'application/json' };
 
 // ── Ficheros de persistencia ──────────────────────────────────────────────────
-const LLAMADAS_FILE   = path.join(__dirname, 'llamadas.json');
-const CHECKPOINT_FILE = path.join(__dirname, 'checkpoint.json');
+// DATA_DIR: si en Railway se monta un volumen (p.ej. /data) y se define la
+// variable DATA_DIR=/data, llamadas.json y checkpoint.json sobreviven a los
+// redeploys. Sin la variable, todo funciona como hasta ahora (__dirname).
+const DATA_DIR        = process.env.DATA_DIR || __dirname;
+const LLAMADAS_FILE   = path.join(DATA_DIR, 'llamadas.json');
+const CHECKPOINT_FILE = path.join(DATA_DIR, 'checkpoint.json');
+
+// Si DATA_DIR es un volumen vacío pero el repo trae ficheros semilla, copiarlos.
+function seedFromRepo(targetFile, name) {
+  if (DATA_DIR === __dirname) return;
+  const seed = path.join(__dirname, name);
+  if (!fs.existsSync(targetFile) && fs.existsSync(seed)) {
+    try { fs.copyFileSync(seed, targetFile); console.log(`${name} sembrado en DATA_DIR desde el repo.`); }
+    catch (e) { console.warn(`No se pudo sembrar ${name}:`, e.message); }
+  }
+}
+seedFromRepo(LLAMADAS_FILE, 'llamadas.json');
+seedFromRepo(CHECKPOINT_FILE, 'checkpoint.json');
 
 // ── Checkpoint ────────────────────────────────────────────────────────────────
 function loadCheckpoint() {
@@ -53,6 +94,11 @@ function loadLlamadas() {
 
 let llamadasCache = loadLlamadas();
 console.log(`llamadas.json cargado: ${Object.keys(llamadasCache.tickets).length} entradas`);
+
+function saveLlamadas() {
+  try { fs.writeFileSync(LLAMADAS_FILE, JSON.stringify(llamadasCache, null, 2)); }
+  catch (e) { console.warn('No se pudo guardar llamadas.json:', e.message); }
+}
 
 function tieneLlamada(ticketId) {
   return llamadasCache.tickets[String(ticketId)] === true;
@@ -215,6 +261,8 @@ function inPeriod(ticket, start, end) {
 }
 
 // ── Métricas por técnico ─────────────────────────────────────────────────────
+// Tiempos y SLA SOLO con minutos laborables (business). Sin fallback a calendar:
+// si un ticket no tiene métrica business, queda fuera del cálculo.
 function agentMetrics(tickets, metricsById) {
   const tipo1 = tickets.filter(t => getTipoCliente(t) === 'tipo_cliente_1');
   const tipo2 = tickets.filter(t => getTipoCliente(t) === 'tipo_cliente_2');
@@ -303,9 +351,107 @@ async function loadInBackground(force = false) {
   } finally { cache.loading = false; }
 }
 
+// ── Scan de llamadas (función interna, usada por endpoint y scheduler) ───────
+let scanState = { running: false, lastRun: null, lastResult: null };
+
+async function runScanLlamadas(desde, hasta, origen = 'manual') {
+  if (scanState.running) { console.log('Scan de llamadas ya en curso, se omite.'); return; }
+  scanState.running = true;
+  console.log(`Scan llamadas (${origen}): ${desde} → ${hasta}`);
+  try {
+    const desdeTs = Math.floor(new Date(desde + 'T00:00:00Z').getTime() / 1000);
+    const hastaTs = Math.floor(new Date(hasta + 'T23:59:59Z').getTime() / 1000);
+    const techIds = new Set(TECNICOS.map(t => String(t.id)));
+    let ticketsRango = cache.tickets.filter(t => {
+      const ts = Math.floor(new Date(t.created_at).getTime() / 1000);
+      return ts >= desdeTs && ts <= hastaTs && techIds.has(String(t.assignee_id));
+    });
+    if (ticketsRango.length === 0) {
+      console.log('Caché vacía, consultando Zendesk directamente para el scan...');
+      let url = `${BASE}/incremental/tickets/cursor.json?start_time=${desdeTs}&per_page=100`;
+      while (url) {
+        const r = await fetch(url, { headers: HEADERS });
+        if (!r.ok) break;
+        const data = await r.json();
+        const batch = (data.tickets || []).filter(t => {
+          const ts = Math.floor(new Date(t.created_at).getTime() / 1000);
+          return ts <= hastaTs && techIds.has(String(t.assignee_id)) && isValidTicket(t);
+        });
+        ticketsRango = ticketsRango.concat(batch);
+        const last = data.tickets?.[data.tickets.length - 1];
+        if (last && new Date(last.created_at).getTime() / 1000 > hastaTs) break;
+        if (data.end_of_stream) break;
+        url = data.after_url || null;
+        if (url) await new Promise(r => setTimeout(r, 300));
+      }
+    }
+    console.log(`Scan llamadas: ${ticketsRango.length} tickets en rango ${desde}→${hasta}`);
+    let conLlamada = 0, consultados = 0;
+    for (const t of ticketsRango) {
+      const id = String(t.id);
+      if (id in llamadasCache.tickets) { if (llamadasCache.tickets[id]) conLlamada++; continue; }
+      try {
+        const r = await fetch(`${BASE}/tickets/${t.id}/comments.json`, { headers: HEADERS });
+        if (r.ok) {
+          const json = await r.json();
+          const tiene = (json.comments || []).some(c => c.type === 'VoiceComment' && c.via?.channel === 'voice' && c.via?.source?.rel === 'outbound');
+          llamadasCache.tickets[id] = tiene;
+          if (tiene) conLlamada++;
+          consultados++;
+          if (consultados % 50 === 0) saveLlamadas(); // progreso parcial
+        }
+      } catch(e) { /* skip */ }
+      await new Promise(r => setTimeout(r, 350));
+    }
+    llamadasCache.meta = {
+      ...llamadasCache.meta,
+      lastScan: new Date().toISOString(),
+      lastScanRango: { desde, hasta },
+      totalTickets: Object.keys(llamadasCache.tickets).length,
+      conLlamada: Object.values(llamadasCache.tickets).filter(Boolean).length,
+    };
+    saveLlamadas();
+    scanState.lastRun = new Date().toISOString();
+    scanState.lastResult = `${consultados} consultados, ${conLlamada} con llamada en rango`;
+    console.log(`Scan completado (${origen}): ${consultados} nuevos consultados, ${conLlamada} con llamada en el rango.`);
+  } catch(e) {
+    console.error('Error en scan llamadas:', e.message);
+    scanState.lastResult = 'error: ' + e.message;
+  } finally {
+    scanState.running = false;
+  }
+}
+
+// Scheduler: comprueba cada minuto; ejecuta scan si el caché está listo y han
+// pasado >6h desde el último scan registrado en llamadas.json.
+const SCAN_INTERVAL = 6 * 60 * 60 * 1000;
+setInterval(() => {
+  if (!cache.stats || cache.loading || scanState.running) return;
+  const last = llamadasCache.meta?.lastScan ? new Date(llamadasCache.meta.lastScan).getTime() : 0;
+  if (Date.now() - last < SCAN_INTERVAL) return;
+  // Ventana: desde el último scan menos 3 días de margen (máx. 30 días atrás)
+  const desdeMs = Math.max(last - 3 * 864e5, Date.now() - 30 * 864e5);
+  const desde = new Date(desdeMs).toISOString().slice(0, 10);
+  const hasta = new Date().toISOString().slice(0, 10);
+  runScanLlamadas(desde, hasta, 'auto');
+}, 60 * 1000);
+
+// Auto-refresh del caché principal: cada 30 min comprueba el TTL (6h).
+// loadInBackground no toca cache.tickets hasta terminar, así que los dashboards
+// siguen sirviendo los datos anteriores durante la recarga.
+setInterval(() => { loadInBackground(false); }, 30 * 60 * 1000);
+
 // ── Servir estáticos ──────────────────────────────────────────────────────────
-app.use(express.static(path.join(__dirname, 'dashboards')));
-app.use(express.static(path.join(__dirname)));
+// v4: los HTML se sirven con no-cache para que el navegador revalide siempre
+// y reciba la versión nueva tras cada deploy (los JS/CSS van inline en los HTML).
+const staticOpts = {
+  etag: false,
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.html')) res.set('Cache-Control', 'no-cache, must-revalidate');
+  },
+};
+app.use(express.static(path.join(__dirname, 'dashboards'), staticOpts));
+app.use(express.static(path.join(__dirname), staticOpts));
 
 // ── Endpoints ─────────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
@@ -313,7 +459,7 @@ app.get('/health', (req, res) => {
   if (fs.existsSync(CHECKPOINT_FILE)) {
     try { const raw = JSON.parse(fs.readFileSync(CHECKPOINT_FILE,'utf8')); cp = { tickets: raw.tickets?.length || 0, savedAt: raw.savedAt, hasAfterUrl: !!raw.afterUrl }; } catch(e) {}
   }
-  res.json({ ok: true, time: new Date().toISOString(), cachedTickets: cache.tickets.length, cachedMetrics: cache.metrics.length, cacheAge: cache.loadedAt ? Math.round((Date.now()-cache.loadedAt)/1000)+'s' : 'none', loading: cache.loading, loadingStage: cache.loadingStage, ticketsPartial: cache.ticketsPartial, lastError: cache.lastError, statsReady: cache.stats !== null, checkpoint: cp });
+  res.json({ ok: true, version: 'v4', time: new Date().toISOString(), cachedTickets: cache.tickets.length, cachedMetrics: cache.metrics.length, cacheAge: cache.loadedAt ? Math.round((Date.now()-cache.loadedAt)/1000)+'s' : 'none', loading: cache.loading, loadingStage: cache.loadingStage, ticketsPartial: cache.ticketsPartial, lastError: cache.lastError, statsReady: cache.stats !== null, checkpoint: cp, scanLlamadas: { running: scanState.running, lastRun: scanState.lastRun, lastResult: scanState.lastResult, lastScanMeta: llamadasCache.meta?.lastScan || null } });
 });
 
 app.get('/api/stats', (req, res) => {
@@ -364,70 +510,27 @@ app.get('/api/ticket-fields', async (req, res) => {
 
 // ── Endpoints llamadas ────────────────────────────────────────────────────────
 app.get('/api/llamadas/meta', (req, res) => {
-  res.json(llamadasCache.meta || {});
+  res.json({ ...(llamadasCache.meta || {}), scanning: scanState.running, statsReady: cache.stats !== null, loadingStage: cache.loadingStage, ticketsPartial: cache.ticketsPartial });
 });
 
-app.get('/api/llamadas/scan', async (req, res) => {
+app.get('/api/llamadas/scan', (req, res) => {
   const desde = req.query.desde || new Date(Date.now() - 7*24*60*60*1000).toISOString().slice(0,10);
-  const hasta  = req.query.hasta  || new Date().toISOString().slice(0,10);
+  const hasta = req.query.hasta || new Date().toISOString().slice(0,10);
+  if (scanState.running) return res.json({ ok: false, message: 'Ya hay un scan en curso.' });
   res.json({ ok: true, message: `Escaneando ${desde} → ${hasta} en background.` });
-  (async () => {
-    try {
-      const desdeTs = Math.floor(new Date(desde+'T00:00:00Z').getTime()/1000);
-      const hastaTs = Math.floor(new Date(hasta+'T23:59:59Z').getTime()/1000);
-      const techIds = new Set(TECNICOS.map(t => String(t.id)));
-      let ticketsRango = cache.tickets.filter(t => {
-        const ts = Math.floor(new Date(t.created_at).getTime()/1000);
-        return ts >= desdeTs && ts <= hastaTs && techIds.has(String(t.assignee_id));
-      });
-      if (ticketsRango.length === 0) {
-        console.log('Caché vacía, consultando Zendesk directamente para el scan...');
-        let url = `${BASE}/incremental/tickets/cursor.json?start_time=${desdeTs}&per_page=100`;
-        while (url) {
-          const r = await fetch(url, { headers: HEADERS });
-          if (!r.ok) break;
-          const data = await r.json();
-          const batch = (data.tickets||[]).filter(t => {
-            const ts = Math.floor(new Date(t.created_at).getTime()/1000);
-            return ts <= hastaTs && techIds.has(String(t.assignee_id)) && isValidTicket(t);
-          });
-          ticketsRango = ticketsRango.concat(batch);
-          const last = data.tickets?.[data.tickets.length-1];
-          if (last && new Date(last.created_at).getTime()/1000 > hastaTs) break;
-          if (data.end_of_stream) break;
-          url = data.after_url || null;
-          if (url) await new Promise(r => setTimeout(r, 300));
-        }
-      }
-      console.log(`Scan llamadas: ${ticketsRango.length} tickets en rango ${desde}→${hasta}`);
-      let conLlamada = 0;
-      for (const t of ticketsRango) {
-        const id = String(t.id);
-        if (llamadasCache.tickets[id] === true) { conLlamada++; continue; }
-        try {
-          const r = await fetch(`${BASE}/tickets/${t.id}/comments.json`, { headers: HEADERS });
-          if (r.ok) {
-            const json = await r.json();
-            const tiene = (json.comments||[]).some(c => c.type==='VoiceComment' && c.via?.channel==='voice' && c.via?.source?.rel==='outbound');
-            llamadasCache.tickets[id] = tiene;
-            if (tiene) conLlamada++;
-          }
-        } catch(e) { /* skip */ }
-        await new Promise(r => setTimeout(r, 350));
-      }
-      llamadasCache.meta = { ...llamadasCache.meta, lastScan: new Date().toISOString(), lastScanRango: { desde, hasta }, totalTickets: Object.keys(llamadasCache.tickets).length, conLlamada: Object.values(llamadasCache.tickets).filter(Boolean).length };
-      try { fs.writeFileSync(LLAMADAS_FILE, JSON.stringify(llamadasCache, null, 2)); }
-      catch(e) { console.warn('No se pudo guardar llamadas.json:', e.message); }
-      console.log(`Scan completado: ${conLlamada} con llamada en el rango.`);
-    } catch(e) { console.error('Error en scan llamadas:', e.message); }
-  })();
+  runScanLlamadas(desde, hasta, 'manual');
 });
 
 app.get('/api/llamadas/stats', (req, res) => {
-  if (!cache.stats) return res.status(202).json({ error: 'Caché principal aún cargando' });
+  if (!cache.stats) {
+    if (!cache.loading) loadInBackground(false);
+    return res.status(202).json({ error: 'Caché principal aún cargando', stage: cache.loadingStage, partial: cache.ticketsPartial, llamadasMeta: { ...(llamadasCache.meta || {}), scanning: scanState.running } });
+  }
   const period = req.query.period || 'current_month';
   const techIds = new Set(TECNICOS.map(t => String(t.id)));
   const { start, end } = getDateRange(period);
+  // Universo: TODOS los tickets válidos asignados a técnicos en el período.
+  // Sin filtro por tipo de cliente (alineado con el dashboard de Llamadas Externas).
   const ticketsPeriod = cache.tickets.filter(t => inPeriod(t, start, end) && techIds.has(String(t.assignee_id)) && isValidTicket(t));
   const total = ticketsPeriod.length;
   const conLlamada = ticketsPeriod.filter(t => tieneLlamada(t.id)).length;
@@ -437,12 +540,15 @@ app.get('/api/llamadas/stats', (req, res) => {
     const mineConLlamada = mine.filter(t => tieneLlamada(t.id)).length;
     if (mine.length > 0) byAgent[tec.name] = { total: mine.length, conLlamada: mineConLlamada, pct: Math.round(mineConLlamada/mine.length*100) };
   });
-  res.json({ period, desde: start.toISOString().slice(0,10), hasta: end.toISOString().slice(0,10), total, conLlamada, pct: total ? Math.round(conLlamada/total*100) : null, byAgent, llamadasMeta: llamadasCache.meta });
+  res.json({ period, desde: start.toISOString().slice(0,10), hasta: end.toISOString().slice(0,10), total, conLlamada, pct: total ? Math.round(conLlamada/total*100) : null, byAgent, llamadasMeta: { ...(llamadasCache.meta || {}), scanning: scanState.running } });
 });
 
 // ── Endpoints compatibilidad legacy ──────────────────────────────────────────
 app.get('/tickets', (req, res) => {
   if (cache.tickets.length === 0 && !cache.loading) loadInBackground(false);
+  if (cache.tickets.length === 0 && cache.loading) {
+    return res.status(202).json({ tickets: [], total: 0, loading: true, stage: cache.loadingStage, partial: cache.ticketsPartial });
+  }
   let tickets = cache.tickets;
   if (req.query.month) tickets = tickets.filter(t => (t.created_at||'').startsWith(req.query.month));
   else if (req.query.year) tickets = tickets.filter(t => (t.created_at||'').startsWith(req.query.year));
@@ -451,6 +557,9 @@ app.get('/tickets', (req, res) => {
 
 app.get('/metrics', (req, res) => {
   if (cache.metrics.length === 0 && !cache.loading) loadInBackground(false);
+  if (cache.metrics.length === 0 && cache.loading) {
+    return res.status(202).json({ metrics: [], total: 0, loading: true, stage: cache.loadingStage, partial: cache.ticketsPartial });
+  }
   res.json({ metrics: cache.metrics, total: cache.metrics.length, cachedAt: cache.loadedAt, loading: cache.loading });
 });
 
@@ -465,9 +574,12 @@ app.get('/all', (req, res) => {
 });
 
 app.get('/refresh', (req, res) => {
+  // v4: el /refresh legacy pasa a ser INCREMENTAL (usa checkpoint). La recarga
+  // completa con borrado de checkpoint queda solo en /api/reload, para evitar
+  // recargas de 20 minutos por error desde los dashboards.
   cache.tickets = []; cache.metrics = []; cache.stats = null; cache.loadedAt = null;
-  loadInBackground(true);
-  res.json({ ok: true, message: 'Recarga iniciada en background.' });
+  loadInBackground(false);
+  res.json({ ok: true, message: 'Recarga incremental iniciada en background.' });
 });
 
 app.get('/api/tickets', (req, res) => {
@@ -481,8 +593,9 @@ app.get('/api/tickets', (req, res) => {
 // ── Arrancar ──────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`\nServidor MP Ascensores v3 (checkpoint) activo en puerto ${PORT}`);
+  console.log(`\nServidor MP Ascensores v4 activo en puerto ${PORT}`);
   console.log('Endpoints: /health  /api/stats  /api/reload  /api/refresh  /api/tickets');
-  console.log('Llamadas:  /api/llamadas/stats  /api/llamadas/scan  /api/llamadas/meta\n');
+  console.log('Llamadas:  /api/llamadas/stats  /api/llamadas/scan  /api/llamadas/meta');
+  console.log('v4: no-store en datos, no-cache en HTML, auto-refresh 6h, auto-scan llamadas 6h\n');
   loadInBackground(false);
 });

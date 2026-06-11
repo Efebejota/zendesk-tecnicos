@@ -10,7 +10,7 @@ app.use(express.json());
 
 const SUBDOMAIN = 'mpascensoresatc';
 const EMAIL = 'fbj@mpascensores.com';
-const TOKEN = '3LpjcUPFnB9Fgk7mQwCRcVBHE17rz1GsJhBcZyXK';
+const TOKEN = process.env.ZENDESK_TOKEN || 'PEGA_AQUI_EL_TOKEN_NUEVO';
 const AUTH = Buffer.from(EMAIL + '/token:' + TOKEN).toString('base64');
 const BASE = 'https://' + SUBDOMAIN + '.zendesk.com/api/v2';
 const HEADERS = { 'Authorization': 'Basic ' + AUTH, 'Content-Type': 'application/json' };
@@ -30,6 +30,12 @@ app.get('/', (req, res) => {
 
 const CACHE_TTL = 6 * 60 * 60 * 1000; // 6 horas
 
+// FIX (llamadas): isValidTicket ya NO excluye los tickets sin tipo de cliente.
+// El filtro de tipo lo aplica ahora el cliente (kpi.html), que mantiene dos universos:
+//   - allTickets (con tipo) para KPIs de tickets/tiempos/SLAs
+//   - allTicketsLlamadas (sin filtro de tipo) para el panel de llamadas de Dirección,
+//     alineado con el dashboard de Llamadas Externas.
+// Aquí solo se excluye lo que no debe contar nunca: merge, deleted e invalid_ticket.
 function isValidTicket(t) {
   // Excluir tickets fusionados o eliminados
   const tags = t.tags || [];
@@ -40,11 +46,6 @@ function isValidTicket(t) {
   const TIPIF_FIELD_ID = 19381692161437;
   const tipifField = (t.custom_fields || []).find(f => f.id === TIPIF_FIELD_ID);
   if (tipifField && tipifField.value === 'invalid_ticket') return false;
-
-  // Excluir tickets sin tipo de cliente
-  const TIPO_FIELD_ID = 23076303407645;
-  const tipoField = (t.custom_fields || []).find(f => f.id === TIPO_FIELD_ID);
-  if (!tipoField || !tipoField.value) return false;
 
   return true;
 }

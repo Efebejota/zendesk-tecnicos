@@ -207,7 +207,11 @@ const DESCANAL_MAP = {
   'romania_sim':             { descanal: 'ROMANIA SIM',              agrupacion: 'SIM' },
 };
 
-let allTickets = [], allMetrics = [], metricsById = {};
+// FIX (llamadas): dos universos de tickets.
+// - allTickets: requiere tipo de cliente — base de todos los KPIs (tickets, tiempos, SLAs).
+// - allTicketsLlamadas: SIN filtro de tipo de cliente — base del panel de llamadas,
+//   alineado con el dashboard de Llamadas Externas (que cuenta sobre todos los tickets válidos).
+let allTickets = [], allTicketsLlamadas = [], allMetrics = [], metricsById = {};
 let currentView = 'tickets-mes';
 
 // ── HELPERS DE FECHA ──────────────────────────────────────────────────────────
@@ -433,37 +437,27 @@ function getOrgName(t) {
   return 'Sin organización';
 }
 
-// FIX: Tiempos en minutos LABORABLES (business), igual que index.js del dashboard de técnicos.
-// proxy.js sirve las métricas crudas de Zendesk; Zendesk incluye tanto calendar como business.
-// Los SLA de empresa se miden en tiempo laborable — usamos business en todo el dashboard.
+// FIX: Tiempos SOLO en minutos LABORABLES (business), igual que index.js del dashboard
+// de técnicos. SIN fallback a calendar: si el ticket no tiene métrica business, devuelve
+// null y queda fuera del cálculo, en lugar de contaminar las medias con minutos de
+// calendario (que inflan o desinflan los tiempos según el caso).
 function getFirstReplyMin(t) {
   const m = metricsById[t.id];
   if(!m) return null;
-  // Preferir business (laborable); fallback a calendar si no existe
   const biz = m.reply_time_in_minutes?.business;
   if(biz != null) return Math.round(biz);
   const bizS = m.reply_time_in_seconds?.business;
   if(bizS != null) return Math.round(bizS/60);
-  // Fallback calendar
-  const cal = m.reply_time_in_minutes?.calendar;
-  if(cal != null) return Math.round(cal);
-  const calS = m.reply_time_in_seconds?.calendar;
-  if(calS != null) return Math.round(calS/60);
   return null;
 }
 
 function getResolutionMin(t) {
   const m = metricsById[t.id];
   if(!m) return null;
-  // Preferir business (laborable); fallback a calendar si no existe
   const biz = m.full_resolution_time_in_minutes?.business;
   if(biz != null) return Math.round(biz);
   const bizS = m.full_resolution_time_in_seconds?.business;
   if(bizS != null) return Math.round(bizS/60);
-  const cal = m.full_resolution_time_in_minutes?.calendar;
-  if(cal != null) return Math.round(cal);
-  const calS = m.full_resolution_time_in_seconds?.calendar;
-  if(calS != null) return Math.round(calS/60);
   return null;
 }
 
@@ -533,12 +527,13 @@ function nav(el, view) {
   renderDashboard();
 }
 
+// FIX 304: cache-buster + cache:'no-store' también en /refresh
 async function forceRefresh() {
   document.getElementById('loading').style.display='flex';
   document.getElementById('dashboard').style.display='none';
   document.getElementById('error-box').style.display='none';
   try {
-    await fetch(PROXY+'/refresh');
+    await fetch(PROXY+'/refresh?_='+Date.now(), {cache:'no-store'});
     await loadData();
   } catch(e) { showError(e.message); }
 }
@@ -558,12 +553,18 @@ async function loadData() {
 
 async function _loadDataAttempt() {
   try {
-    const [tr, mr] = await Promise.all([fetch(PROXY+'/tickets?_='+Date.now()), fetch(PROXY+'/metrics?_='+Date.now())]);
+    // FIX 304: cache-buster ?_=Date.now() + cache:'no-store' en /tickets y /metrics.
+    // El buster hace única cada URL y no-store impide que el navegador haga peticiones
+    // condicionales (If-None-Match) que devuelven 304 con datos obsoletos de su caché.
+    const [tr, mr] = await Promise.all([
+      fetch(PROXY+'/tickets?_='+Date.now(), {cache:'no-store'}),
+      fetch(PROXY+'/metrics?_='+Date.now(), {cache:'no-store'})
+    ]);
 
-    if(tr.status === 202) {
+    if(tr.status === 202 || mr.status === 202) {
       // Proxy todavía cargando — consultar /health para mostrar progreso
       try {
-        const hr = await fetch(PROXY+'/health');
+        const hr = await fetch(PROXY+'/health?_='+Date.now(), {cache:'no-store'});
         const hd = await hr.json();
         const stage = hd.loadingStage || 'tickets';
         const partial = hd.ticketsPartial || 0;
@@ -584,18 +585,25 @@ async function _loadDataAttempt() {
     if(!tr.ok || !mr.ok) throw new Error('Error HTTP '+tr.status);
     const [td, md] = await Promise.all([tr.json(), mr.json()]);
 
-    // FIX: Filtro cliente igual que proxy.js: excluye closed_by_merge, deleted,
-    // invalid_ticket en campo TIPIF_FIELD, y sin tipo de cliente.
+    // FIX (llamadas): el proxy ya NO excluye los tickets sin tipo de cliente, así que
+    // el cliente construye dos universos a partir de los tickets recibidos:
+    //   1. baseTickets — excluye merge, deleted e invalid_ticket (común a todo)
+    //   2. allTicketsLlamadas = baseTickets (sin filtro de tipo) — para el panel de llamadas
+    //   3. allTickets = baseTickets CON tipo de cliente — para el resto de KPIs (sin cambios
+    //      en los números de tickets, tiempos y SLAs respecto a antes)
     const rawTickets = td.tickets || [];
-    allTickets = rawTickets.filter(t => {
+    const baseTickets = rawTickets.filter(t => {
       const tags = t.tags || [];
       if(tags.includes('closed_by_merge')) return false;
-      if(t.status === 'deleted') return false;                         // FIX añadido
+      if(t.status === 'deleted') return false;
       const tipifField = (t.custom_fields||[]).find(f=>f.id===TIPIF_FIELD);
       if(tipifField && tipifField.value === 'invalid_ticket') return false;
-      const tipoField = (t.custom_fields||[]).find(f=>f.id===TIPO_FIELD);
-      if(!tipoField || !tipoField.value) return false;
       return true;
+    });
+    allTicketsLlamadas = baseTickets;
+    allTickets = baseTickets.filter(t => {
+      const tipoField = (t.custom_fields||[]).find(f=>f.id===TIPO_FIELD);
+      return !!(tipoField && tipoField.value);
     });
 
     allMetrics = md.metrics || [];
@@ -1151,9 +1159,6 @@ function renderUltSlas(dash) {
 
 
 // ─── POR CANAL, CLIENTES/TIPIFICACIONES, DIRECCIÓN ────────────────────────────
-// Estas secciones son idénticas al original. El único cambio relevante es:
-// - renderDireccion: año hardcodeado '2026' → curYear() dinámico
-// - getFirstReplyMin/getResolutionMin ya usan business (corregido arriba)
 
 function renderPorCanal(dash) {
   document.getElementById('view-title').textContent='Análisis por Canal — Último Mes Cerrado';
@@ -1327,13 +1332,19 @@ function renderDireccion(dash) {
   const tMesT1=avgFRTipo(acumMes,'Tipo 1'), tMesT2=avgFRTipo(acumMes,'Tipo 2');
   const tAnioT1=avgFRTipo(acumAnio,'Tipo 1'), tAnioT2=avgFRTipo(acumAnio,'Tipo 2');
 
+  // FIX (llamadas): TODO el panel de llamadas usa allTicketsLlamadas (sin filtro de
+  // tipo de cliente), alineado con el dashboard de Llamadas Externas. Las tablas de
+  // SLA y tiempos de arriba siguen usando allTickets (con tipo), como hasta ahora.
+  const acumMesLl=allTicketsLlamadas.filter(t=>(t.created_at||'').startsWith(curMonth_));
+  const acumAnioLl=allTicketsLlamadas.filter(t=>(t.created_at||'').startsWith(cy));
+
   const hoy=new Date();
   const semActual=getWeekNumber(hoy);
   const semUltimaCerrada=semActual-1;
   const numSemanas=Math.min(semUltimaCerrada,16);
   const semanas=[];
   for(let i=numSemanas;i>=1;i--) {
-    const wt=ticketsInWeek(allTickets,i);
+    const wt=ticketsInWeek(allTicketsLlamadas,i);
     const tel=wt.filter(isTelefono).length;
     const {mon}=getWeekBounds(i);
     const wNum=getWeekNumber(mon);
@@ -1341,9 +1352,17 @@ function renderDireccion(dash) {
   }
 
   const semUlt=semanas.length>0?semanas[semanas.length-1]:{pct:0,tel:0,total:0,label:'—'};
-  const telMes=acumMes.filter(isTelefono).length, totalMes=acumMes.length;
-  const telAnio=acumAnio.filter(isTelefono).length, totalAnio=acumAnio.length;
+  const telMes=acumMesLl.filter(isTelefono).length, totalMes=acumMesLl.length;
+  const telAnio=acumAnioLl.filter(isTelefono).length, totalAnio=acumAnioLl.length;
   const pctMes=totalMes>0?(telMes/totalMes*100):0, pctAnio=totalAnio>0?(telAnio/totalAnio*100):0;
+
+  // FIX (nueva tarjeta): Último Mes Cerrado del panel de llamadas
+  const pmLl=prevMonth();
+  const ultMesLl=allTicketsLlamadas.filter(t=>(t.created_at||'').startsWith(pmLl));
+  const telUltMes=ultMesLl.filter(isTelefono).length, totalUltMes=ultMesLl.length;
+  const pctUltMes=totalUltMes>0?(telUltMes/totalUltMes*100):0;
+  const mNLl={1:'Ene',2:'Feb',3:'Mar',4:'Abr',5:'May',6:'Jun',7:'Jul',8:'Ago',9:'Sep',10:'Oct',11:'Nov',12:'Dic'};
+  const pmLlLbl=mNLl[parseInt(pmLl.slice(5,7))]+' '+pmLl.slice(0,4);
 
   const mN={1:'Ene',2:'Feb',3:'Mar',4:'Abr',5:'May',6:'Jun',7:'Jul',8:'Ago',9:'Sep',10:'Oct',11:'Nov',12:'Dic'};
   const slaEvoMonths=[],slaEvoT1=[],slaEvoT2=[],slaEvoMedia=[];
@@ -1433,15 +1452,19 @@ function renderDireccion(dash) {
     <div class="chart-container" style="height:220px"><canvas id="ch-dir-t-evo"></canvas></div>
   </div>
   <div class="section-header section-gap"><span>📞</span><h2>Tickets con Llamadas Telefónicas Salientes — Semanas Completas (hasta ${semUlt.label})</h2></div>
-  <div class="kpi-grid" style="margin-bottom:24px">
+  <div class="kpi-grid kpi-grid-5" style="margin-bottom:24px">
     <div class="kpi-card orange"><div class="kpi-label">Sem. Última Cerrada</div><div class="kpi-value">${semUlt.pct.toFixed(1)}%</div><div class="kpi-sub">${semUlt.tel} llamadas de ${semUlt.total} tickets</div></div>
     <div class="kpi-card blue"><div class="kpi-label">Acum. Mes</div><div class="kpi-value">${pctMes.toFixed(1)}%</div><div class="kpi-sub">${telMes} llamadas de ${totalMes} tickets</div></div>
+    <div class="kpi-card green"><div class="kpi-label">Último Mes Cerrado (${pmLlLbl})</div><div class="kpi-value">${pctUltMes.toFixed(1)}%</div><div class="kpi-sub">${telUltMes} llamadas de ${totalUltMes} tickets</div></div>
     <div class="kpi-card purple"><div class="kpi-label">Acum. Año ${cy}</div><div class="kpi-value">${pctAnio.toFixed(1)}%</div><div class="kpi-sub">${telAnio} llamadas de ${totalAnio} tickets</div></div>
     <div class="kpi-card ${semanas.length>=2&&(semUlt.pct-semanas[semanas.length-2].pct)>=0?'green':'red'}"><div class="kpi-label">Tendencia</div><div class="kpi-value">${semanas.length>=2?(semUlt.pct-semanas[semanas.length-2].pct).toFixed(1)+'pp':'—'}</div><div class="kpi-sub">vs semana anterior</div></div>
   </div>
   <div class="chart-card" style="margin-bottom:24px">
     <div class="chart-title">Tickets con Llamadas Salientes vs. Total por Semana — hasta última semana cerrada</div>
     <div class="chart-container" style="height:240px"><canvas id="ch-dir-llamadas"></canvas></div>
+  </div>
+  <div style="padding:8px 14px;font-size:10px;color:#8899bb;background:#f8fafd;border-radius:8px;margin-top:-12px;margin-bottom:24px">
+    Universo del panel de llamadas: todos los tickets válidos, <strong>incluidos los que no tienen tipo de cliente</strong> — alineado con el dashboard de Llamadas Externas. Las tablas de SLA y tiempos de arriba siguen usando solo tickets con tipo de cliente.
   </div>`;
 
   new Chart(document.getElementById('ch-dir-sla-evo'),{type:'line',data:{labels:slaEvoMonths,datasets:[
