@@ -73,6 +73,22 @@ tr:last-child td { border-bottom: none; }
 #error-box { background: #fdecea; border-left: 4px solid #e74c3c; border-radius: 6px; padding: 14px 16px; color: #c0392b; font-size: 13px; margin: 16px 0; display: none; }
 
 .compare-note { font-size: 11px; color: #b45309; background: #fff8f0; padding: 8px 12px; border-radius: 5px; margin-top: 8px; border-left: 3px solid #e67e22; }
+
+/* Ranking de técnicos */
+.role-badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 9px; font-weight: 700; text-transform: uppercase; margin-left: 6px; vertical-align: middle; letter-spacing: 0.3px; }
+.role-tech { background: #e8f5fe; color: #1e3a6e; }
+.role-mailbox { background: #fef4e0; color: #b45309; }
+.role-manager { background: #f0f0f8; color: #666; }
+.tech-row td { transition: background 0.1s; }
+.tech-row.mailbox-row td { background: #fffbf3; }
+.tech-row.manager-row td { background: #f8f8fb; color: #888; }
+.tech-row:hover td { background: #f4f8ff !important; }
+.tech-name { font-weight: 600; }
+.sla-pill { display: inline-block; padding: 2px 10px; border-radius: 12px; font-weight: 700; font-size: 11px; min-width: 50px; text-align: center; }
+.sla-pill-good { background: #e8f5e9; color: #2a9d8f; }
+.sla-pill-warn { background: #fef4e0; color: #b45309; }
+.sla-pill-bad { background: #fde8ea; color: #c0392b; }
+.sla-pill-none { background: #f0f0f8; color: #aaa; }
 </style>
 </head>
 <body>
@@ -181,9 +197,14 @@ function showError(msg) {
 async function fetchAndRender(seq) {
   if (seq !== _seq) return;
   try {
-    const r = await fetch(`${PROXY}/api/kpi?period=${currentPeriod}&_=${Date.now()}`, { cache: 'no-store' });
-    if (r.status === 202) {
-      const d = await r.json().catch(() => ({}));
+    // Petición paralela: KPI canónico + stats por agente
+    const [rKpi, rStats] = await Promise.all([
+      fetch(`${PROXY}/api/kpi?period=${currentPeriod}&_=${Date.now()}`, { cache: 'no-store' }),
+      fetch(`${PROXY}/api/stats?_=${Date.now()}`, { cache: 'no-store' }),
+    ]);
+    if (rKpi.status === 202 || rStats.status === 202) {
+      // Cualquiera de las dos en 202 ⇒ retry. Mostrar progreso del que esté cargando.
+      const d = await rKpi.json().catch(() => ({}));
       const stage = d.stage || '?';
       const partial = d.partial || 0;
       document.getElementById('loading').innerHTML = `
@@ -196,9 +217,10 @@ async function fetchAndRender(seq) {
       setTimeout(() => fetchAndRender(seq), delay);
       return;
     }
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const data = await r.json();
-    render(data);
+    if (!rKpi.ok) throw new Error('KPI HTTP ' + rKpi.status);
+    if (!rStats.ok) throw new Error('Stats HTTP ' + rStats.status);
+    const [kpiData, statsData] = await Promise.all([rKpi.json(), rStats.json()]);
+    render(kpiData, statsData);
   } catch (e) {
     showError(e.message);
   }
@@ -227,7 +249,97 @@ function ppCell(cur, prev) {
   return `<span class="${cls}">${arrow} ${Math.abs(d).toFixed(1)}pp</span>`;
 }
 
-function render(d) {
+function renderRanking(statsData, period) {
+  // Mapeo period KPI → period stats (mismas claves, viene bien)
+  const periodData = statsData[period];
+  if (!periodData || !periodData.byAgent) return '';
+
+  const agents = Object.entries(periodData.byAgent)
+    .map(([name, m]) => ({ name, ...m }))
+    .filter(a => a.total > 0 || a.role === 'manager'); // mostrar manager siempre como referencia
+
+  // Orden: tech primero (por tickets desc), luego mailboxes, luego managers
+  const order = { tech: 0, mailbox: 1, manager: 2 };
+  agents.sort((a, b) => {
+    const ord = (order[a.role] ?? 3) - (order[b.role] ?? 3);
+    if (ord !== 0) return ord;
+    return (b.total || 0) - (a.total || 0);
+  });
+
+  if (agents.length === 0) return '';
+
+  const slaPill = (v, target) => {
+    if (v == null) return '<span class="sla-pill sla-pill-none">—</span>';
+    const cls = v >= target ? 'sla-pill-good' : (v >= target * 0.8 ? 'sla-pill-warn' : 'sla-pill-bad');
+    return `<span class="sla-pill ${cls}">${v}%</span>`;
+  };
+
+  const roleBadge = (role) => {
+    if (role === 'mailbox') return '<span class="role-badge role-mailbox" title="Buzón colectivo">buzón</span>';
+    if (role === 'manager') return '<span class="role-badge role-manager" title="Manager - no entra en agregados">manager</span>';
+    return '';
+  };
+
+  let totalTickets = 0, totalPuntos = 0;
+  agents.forEach(a => { if (a.role !== 'manager') { totalTickets += (a.total || 0); totalPuntos += (a.puntos || 0); }});
+
+  return `
+    <div class="section">
+      <h2>👥 Ranking individual del equipo</h2>
+      <table>
+        <thead>
+          <tr>
+            <th style="width:30px">#</th>
+            <th>Técnico</th>
+            <th class="right">Tickets</th>
+            <th class="right">% del total</th>
+            <th class="right">Resueltos</th>
+            <th class="right">Puntos</th>
+            <th class="right">T. resp. T1</th>
+            <th class="right">T. resp. T2</th>
+            <th class="right">SLA T1</th>
+            <th class="right">SLA T2</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${agents.map((a, i) => {
+            const rowCls = a.role === 'mailbox' ? 'tech-row mailbox-row' : a.role === 'manager' ? 'tech-row manager-row' : 'tech-row';
+            const pctTotal = totalTickets > 0 && a.role !== 'manager' ? (a.total / totalTickets * 100).toFixed(1) + '%' : '—';
+            const idxLabel = a.role === 'manager' ? '<span style="color:#aaa">—</span>' : (i + 1);
+            return `<tr class="${rowCls}">
+              <td class="gray">${idxLabel}</td>
+              <td><span class="tech-name">${a.name}</span>${roleBadge(a.role)}</td>
+              <td class="right blue">${a.total || 0}</td>
+              <td class="right">${pctTotal}</td>
+              <td class="right">${a.resolved || 0}</td>
+              <td class="right purple">${a.puntos || 0}</td>
+              <td class="right">${a.avgFR1 != null ? a.avgFR1 + ' min' : '<span class="gray">—</span>'}</td>
+              <td class="right">${a.avgFR2 != null ? a.avgFR2 + ' min' : '<span class="gray">—</span>'}</td>
+              <td class="right">${slaPill(a.sla1, 50)}</td>
+              <td class="right">${slaPill(a.sla2, 75)}</td>
+            </tr>`;
+          }).join('')}
+          <tr style="border-top:2px solid #1e3a6e;background:#f8fafd;font-weight:600">
+            <td></td>
+            <td><strong>Total equipo (sin manager)</strong></td>
+            <td class="right blue"><strong>${totalTickets}</strong></td>
+            <td class="right">100%</td>
+            <td class="right">—</td>
+            <td class="right purple"><strong>${totalPuntos}</strong></td>
+            <td class="right" colspan="4" style="color:#8899bb;font-style:italic">los tiempos individuales no se promedian</td>
+          </tr>
+        </tbody>
+      </table>
+      <div style="font-size:10px;color:#8899bb;margin-top:8px;line-height:1.5">
+        Buzones (Multimarca, Technical Team) cuentan en el total del equipo pero se identifican aparte.
+        Manager (Fernando) no entra en agregados; aparece como referencia personal.
+        Pildora SLA: <span class="sla-pill sla-pill-good">verde</span> cumple, <span class="sla-pill sla-pill-warn">naranja</span> dentro del 80% del objetivo, <span class="sla-pill sla-pill-bad">rojo</span> incumple.
+      </div>
+    </div>
+  `;
+}
+
+function render(d, statsData) {
   document.getElementById('loading').style.display = 'none';
   Object.values(Chart.instances || {}).forEach(c => c.destroy());
 
@@ -443,6 +555,8 @@ function render(d) {
       </div>
     </div>`;
   }
+
+  html += renderRanking(statsData, d.period);
 
   html += `
     <div class="charts-grid">

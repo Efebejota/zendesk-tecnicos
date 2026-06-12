@@ -58,6 +58,11 @@
   .spinner { display: inline-block; width: 28px; height: 28px; border: 3px solid #f0f0f8; border-top-color: #e63946; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 12px; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .error-box { background: #fde8ea; border-radius: 8px; padding: 16px 20px; color: #c0392b; font-size: 0.85rem; margin-bottom: 20px; display: none; }
+  /* Etapa 3: badges y avisos */
+  .mailbox-badge { display: inline-block; background: #fef4e0; color: #b45309; font-size: 0.65rem; font-weight: 700; padding: 1px 7px; border-radius: 10px; text-transform: uppercase; letter-spacing: 0.3px; margin-left: 6px; vertical-align: middle; }
+  .scan-stale { background: #fef4e0; color: #b45309; padding: 1px 8px; border-radius: 10px; font-size: 0.7rem; font-weight: 700; }
+  .scan-fresh { background: #e8f5e9; color: #2a9d8f; padding: 1px 8px; border-radius: 10px; font-size: 0.7rem; font-weight: 700; }
+  .legend-tip { font-size: 0.72rem; color: #888; margin-top: 8px; padding: 8px 12px; background: #fafafa; border-radius: 6px; border-left: 3px solid #ddd; }
 </style>
 </head>
 <body>
@@ -158,6 +163,7 @@ function renderDashboard(data) {
     .sort((a,b) => (b[1].pct||0) - (a[1].pct||0));
 
   const maxPct = agentes.length ? Math.max(...agentes.map(([,v]) => v.pct||0)) : 100;
+  const mailboxBadge = (v) => v.role === 'mailbox' ? '<span class="mailbox-badge">buzón</span>' : '';
 
   document.getElementById('content').innerHTML = `
     <div class="kpi-row">
@@ -172,7 +178,7 @@ function renderDashboard(data) {
         <div class="kpi-sub">de ${total} tickets totales</div>
       </div>
       <div class="kpi-card quaternary">
-        <div class="kpi-label">Técnicos activos</div>
+        <div class="kpi-label">Entidades activas</div>
         <div class="kpi-value">${agentes.length}</div>
         <div class="kpi-sub">con tickets en el período</div>
       </div>
@@ -185,7 +191,7 @@ function renderDashboard(data) {
           ${agentes.map(([name, v]) => `
             <div class="bar-item">
               <div class="bar-meta">
-                <span class="bar-name">${name}</span>
+                <span class="bar-name">${name}${mailboxBadge(v)}</span>
                 <span class="bar-nums"><strong>${v.pct ?? 0}%</strong> · ${v.conLlamada}/${v.total}</span>
               </div>
               <div class="bar-track">
@@ -194,6 +200,9 @@ function renderDashboard(data) {
             </div>
           `).join('')}
           ${agentes.length === 0 ? '<div style="color:#aaa;font-size:0.85rem">Sin datos para este período</div>' : ''}
+        </div>
+        <div class="legend-tip">
+          Los buzones colectivos (Multimarca, Technical Team) cuentan en el total pero se identifican aparte ya que no representan a una persona individual.
         </div>
       </div>
 
@@ -216,7 +225,7 @@ function renderDashboard(data) {
                 const cls = p >= 20 ? 'pct-high' : p >= 10 ? 'pct-mid' : p > 0 ? 'pct-low' : 'pct-zero';
                 return `<tr>
                   <td style="color:#aaa">${i+1}</td>
-                  <td><strong>${name}</strong></td>
+                  <td><strong>${name}</strong>${mailboxBadge(v)}</td>
                   <td>${v.total}</td>
                   <td>${v.conLlamada}</td>
                   <td><span class="pct-badge ${cls}">${p}%</span></td>
@@ -233,10 +242,24 @@ function renderDashboard(data) {
 
 function updateMeta(meta) {
   if (!meta) return;
-  const scan = meta.lastScan ? new Date(meta.lastScan).toLocaleString('es-ES') : '—';
+  const scanDate = meta.lastScan ? new Date(meta.lastScan) : null;
+  const scan = scanDate ? scanDate.toLocaleString('es-ES') : '—';
   const scanning = meta.scanning ? ' <span class="scan-badge">⟳ escaneando ahora</span>' : '';
+
+  // Aviso visual: si el scan tiene más de 24h, marcarlo como "retrasado".
+  // El servidor v5 hace auto-scan cada 6h; >24h sin scan implica algún problema.
+  let scanBadge = '';
+  if (scanDate && !meta.scanning) {
+    const hoursAgo = (Date.now() - scanDate.getTime()) / 3600000;
+    if (hoursAgo > 24) {
+      scanBadge = ` <span class="scan-stale" title="Auto-scan retrasado. Debería correr cada 6h">${hoursAgo.toFixed(0)}h sin actualizar</span>`;
+    } else {
+      scanBadge = ` <span class="scan-fresh">actualizado hace ${hoursAgo < 1 ? Math.round(hoursAgo*60) + 'min' : hoursAgo.toFixed(1) + 'h'}</span>`;
+    }
+  }
+
   document.getElementById('metaInfo').innerHTML =
-    `Último scan: ${scan}${scanning}<br>Histórico: ${meta.totalTickets ?? '—'} tickets · ${meta.conLlamada ?? '—'} con llamada`;
+    `Último scan: ${scan}${scanning}${scanBadge}<br>Histórico: ${meta.totalTickets ?? '—'} tickets · ${meta.conLlamada ?? '—'} con llamada`;
 }
 
 function showStatus(msg) {
