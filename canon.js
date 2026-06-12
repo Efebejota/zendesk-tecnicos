@@ -124,6 +124,69 @@ function inPeriod(ticket, start, end) {
   return d >= start && d <= end;
 }
 
+// ── Rangos comparativos ──────────────────────────────────────────────────────
+// Para un período, devuelve el "anterior" inmediato (mes-1, semana-1, año YTD = año anterior YTD).
+function getPreviousRange(period, refDate) {
+  const now = refDate || new Date();
+  if (period === 'current_month') {
+    // Mes anterior completo
+    const start = new Date(now.getFullYear(), now.getMonth() - 1, 1, 0, 0, 0, 0);
+    const end   = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+    return { start, end, label: 'Mes anterior' };
+  }
+  if (period === 'last_month') {
+    // Antepenúltimo mes (mes -2)
+    const start = new Date(now.getFullYear(), now.getMonth() - 2, 1, 0, 0, 0, 0);
+    const end   = new Date(now.getFullYear(), now.getMonth() - 1, 0, 23, 59, 59, 999);
+    return { start, end, label: 'Mes anterior' };
+  }
+  if (period === 'current_week') {
+    const day = now.getDay() || 7;
+    const monCur = new Date(now); monCur.setDate(now.getDate() - day + 1); monCur.setHours(0,0,0,0);
+    const start = new Date(monCur); start.setDate(monCur.getDate() - 7);
+    const end = new Date(start); end.setDate(start.getDate() + 4); end.setHours(23,59,59,999);
+    return { start, end, label: 'Semana anterior' };
+  }
+  if (period === 'last_week') {
+    const day = now.getDay() || 7;
+    const monCur = new Date(now); monCur.setDate(now.getDate() - day + 1); monCur.setHours(0,0,0,0);
+    const start = new Date(monCur); start.setDate(monCur.getDate() - 14);
+    const end = new Date(start); end.setDate(start.getDate() + 4); end.setHours(23,59,59,999);
+    return { start, end, label: 'Semana anterior' };
+  }
+  if (period === 'year') {
+    // Año anterior YTD: enero a misma fecha del año pasado
+    const start = new Date(now.getFullYear() - 1, 0, 1, 0, 0, 0, 0);
+    const end   = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate(), 23, 59, 59, 999);
+    return { start, end, label: 'YTD año anterior' };
+  }
+  return null;
+}
+
+// Para un período, devuelve el "mismo período del año anterior" (comparativa estacional).
+function getSamePeriodLastYear(period, refDate) {
+  const now = refDate || new Date();
+  if (period === 'current_month') {
+    // Mismo mes año anterior, hasta el mismo día
+    const start = new Date(now.getFullYear() - 1, now.getMonth(), 1, 0, 0, 0, 0);
+    const end   = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate(), 23, 59, 59, 999);
+    return { start, end, label: 'Mismo período año anterior' };
+  }
+  if (period === 'last_month') {
+    // Mismo mes año anterior completo
+    const y = now.getFullYear() - 1, m = now.getMonth() - 1;
+    const start = new Date(y, m, 1, 0, 0, 0, 0);
+    const end   = new Date(y, m + 1, 0, 23, 59, 59, 999);
+    return { start, end, label: 'Mismo mes año anterior' };
+  }
+  if (period === 'year') {
+    // YTD año anterior (igual que previous para 'year')
+    return getPreviousRange('year', refDate);
+  }
+  // Semanas: no tiene mucho sentido la comparativa anual semanal exacta, devolvemos null
+  return null;
+}
+
 // ── Tiempos (solo business, sin fallback) ────────────────────────────────────
 function getBusinessFR(t, metricsById)  { return metricsById[t.id]?.reply_time_in_minutes?.business ?? null; }
 function getBusinessRes(t, metricsById) { return metricsById[t.id]?.full_resolution_time_in_minutes?.business ?? null; }
@@ -193,6 +256,7 @@ module.exports = {
   // helpers
   getField, getTipoCliente, getPuntos, getTipificacion,
   isValidTicket, getDateRange, inPeriod,
+  getPreviousRange, getSamePeriodLastYear,
   getBusinessFR, getBusinessRes, slaCumplido,
   // filtros canónicos
   teamTickets, kpiTickets,

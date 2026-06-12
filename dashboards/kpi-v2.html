@@ -204,15 +204,42 @@ async function fetchAndRender(seq) {
   }
 }
 
+function pctVariation(cur, prev) {
+  if (prev == null || prev === 0 || cur == null) return null;
+  return ((cur - prev) / prev) * 100;
+}
+
+function variationCell(cur, prev, opts = {}) {
+  // opts.inverse: si true, una bajada es buena (p.ej. tiempos de respuesta)
+  const v = pctVariation(cur, prev);
+  if (v == null) return '<span class="gray">—</span>';
+  const arrow = v >= 0 ? '▲' : '▼';
+  const isPositive = opts.inverse ? v < 0 : v > 0;
+  const cls = isPositive ? 'green' : (v === 0 ? 'gray' : 'red');
+  return `<span class="${cls}">${arrow} ${Math.abs(v).toFixed(1)}%</span>`;
+}
+
+function ppCell(cur, prev) {
+  if (prev == null || cur == null) return '<span class="gray">—</span>';
+  const d = cur - prev;
+  const arrow = d >= 0 ? '▲' : '▼';
+  const cls = d > 0 ? 'green' : (d === 0 ? 'gray' : 'red');
+  return `<span class="${cls}">${arrow} ${Math.abs(d).toFixed(1)}pp</span>`;
+}
+
 function render(d) {
   document.getElementById('loading').style.display = 'none';
   Object.values(Chart.instances || {}).forEach(c => c.destroy());
 
+  const cur = d.current;
+  const prev = d.previous;
+  const yoy = d.yoy;
+
   // Calcular std del período según tipo
   const now = new Date();
   let stdPeriodo, descPeriodo, etiquetaStd;
-  const start = new Date(d.desde + 'T00:00:00');
-  const end = new Date(d.hasta + 'T23:59:59');
+  const start = new Date(cur.desde + 'T00:00:00');
+  const end = new Date(cur.hasta + 'T23:59:59');
 
   if (d.period === 'current_month') {
     const y = start.getFullYear(), m = start.getMonth(), today = now.getDate();
@@ -231,8 +258,7 @@ function render(d) {
     stdPeriodo = diasLab * STD_DIA;
     descPeriodo = `Acumulado YTD · ${diasLab} días lab.`;
     etiquetaStd = `Std YTD`;
-  } else { // weeks
-    // Estimar días laborables en el rango (más simple: contar)
+  } else {
     let c = 0;
     for (let dt = new Date(start); dt <= end; dt.setDate(dt.getDate() + 1)) {
       const dow = dt.getDay();
@@ -243,20 +269,19 @@ function render(d) {
     etiquetaStd = `Std semanal`;
   }
 
-  const g = d.general;
+  const g = cur.general;
   const desv = g.total - stdPeriodo;
   const desvCls = desv >= 0 ? 'orange' : 'red';
   const pctResol = g.total > 0 ? (g.resolved / g.total * 100).toFixed(1) : '—';
-
   const sla1Cls = g.sla1 != null && g.sla1 >= 50 ? 'green' : 'red';
   const sla2Cls = g.sla2 != null && g.sla2 >= 75 ? 'green' : 'red';
 
   let html = `
     <div class="info-bar canon">
-      <strong>📡 Fuente única: /api/kpi</strong> · período <strong>${d.desde}</strong> → <strong>${d.hasta}</strong> · ${descPeriodo}
-      <br>Universo canónico: <strong>${d.universo.totalKpi}</strong> tickets KPI (T1+T2 del equipo TAT)
-      &nbsp;·&nbsp; total equipo (todos los tipos): ${d.universo.totalTeam}
-      &nbsp;·&nbsp; brutos en Zendesk: ${d.universo.totalRaw}
+      <strong>📡 Fuente única: /api/kpi</strong> · período <strong>${cur.desde}</strong> → <strong>${cur.hasta}</strong> · ${descPeriodo}
+      <br>Universo canónico: <strong>${cur.universo.totalKpi}</strong> tickets KPI (T1+T2 del equipo TAT)
+      &nbsp;·&nbsp; total equipo (todos los tipos): ${cur.universo.totalTeam}
+      &nbsp;·&nbsp; brutos en Zendesk: ${cur.universo.totalRaw}
     </div>
 
     <div class="kpi-grid kpi-grid-5">
@@ -285,8 +310,74 @@ function render(d) {
         <div class="kpi-value">${g.puntos}</div>
         <div class="kpi-sub">resueltos en período</div>
       </div>
-    </div>
+    </div>`;
 
+  // ── Comparativas ──
+  if (prev || yoy) {
+    html += `
+    <div class="section">
+      <h2>📊 Comparativas (vs períodos anteriores)</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Métrica</th>
+            <th class="right">Actual</th>
+            ${prev ? `<th class="right">${prev.label}<br><small style="color:#8899bb;font-weight:400">(${prev.desde} → ${prev.hasta})</small></th><th class="right">Δ %</th>` : ''}
+            ${yoy ? `<th class="right">${yoy.label}<br><small style="color:#8899bb;font-weight:400">(${yoy.desde} → ${yoy.hasta})</small></th><th class="right">Δ %</th>` : ''}
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Volumen KPI</strong></td>
+            <td class="right blue">${g.total}</td>
+            ${prev ? `<td class="right">${prev.general.total}</td><td class="right">${variationCell(g.total, prev.general.total)}</td>` : ''}
+            ${yoy  ? `<td class="right">${yoy.general.total}</td><td class="right">${variationCell(g.total, yoy.general.total)}</td>`  : ''}
+          </tr>
+          <tr>
+            <td><strong>Resueltos</strong></td>
+            <td class="right">${g.resolved}</td>
+            ${prev ? `<td class="right">${prev.general.resolved}</td><td class="right">${variationCell(g.resolved, prev.general.resolved)}</td>` : ''}
+            ${yoy  ? `<td class="right">${yoy.general.resolved}</td><td class="right">${variationCell(g.resolved, yoy.general.resolved)}</td>`  : ''}
+          </tr>
+          <tr>
+            <td><strong>Puntos</strong></td>
+            <td class="right purple">${g.puntos}</td>
+            ${prev ? `<td class="right">${prev.general.puntos}</td><td class="right">${variationCell(g.puntos, prev.general.puntos)}</td>` : ''}
+            ${yoy  ? `<td class="right">${yoy.general.puntos}</td><td class="right">${variationCell(g.puntos, yoy.general.puntos)}</td>`  : ''}
+          </tr>
+          <tr>
+            <td><strong>SLA Tipo 1</strong></td>
+            <td class="right ${sla1Cls}">${g.sla1 != null ? g.sla1 + '%' : '—'}</td>
+            ${prev ? `<td class="right">${prev.general.sla1 != null ? prev.general.sla1 + '%' : '—'}</td><td class="right">${ppCell(g.sla1, prev.general.sla1)}</td>` : ''}
+            ${yoy  ? `<td class="right">${yoy.general.sla1 != null ? yoy.general.sla1 + '%' : '—'}</td><td class="right">${ppCell(g.sla1, yoy.general.sla1)}</td>`   : ''}
+          </tr>
+          <tr>
+            <td><strong>SLA Tipo 2</strong></td>
+            <td class="right ${sla2Cls}">${g.sla2 != null ? g.sla2 + '%' : '—'}</td>
+            ${prev ? `<td class="right">${prev.general.sla2 != null ? prev.general.sla2 + '%' : '—'}</td><td class="right">${ppCell(g.sla2, prev.general.sla2)}</td>` : ''}
+            ${yoy  ? `<td class="right">${yoy.general.sla2 != null ? yoy.general.sla2 + '%' : '—'}</td><td class="right">${ppCell(g.sla2, yoy.general.sla2)}</td>`   : ''}
+          </tr>
+          <tr>
+            <td><strong>T. medio 1ª resp. T1 (min lab.)</strong></td>
+            <td class="right">${g.avgFR1 ?? '—'}</td>
+            ${prev ? `<td class="right">${prev.general.avgFR1 ?? '—'}</td><td class="right">${variationCell(g.avgFR1, prev.general.avgFR1, {inverse:true})}</td>` : ''}
+            ${yoy  ? `<td class="right">${yoy.general.avgFR1 ?? '—'}</td><td class="right">${variationCell(g.avgFR1, yoy.general.avgFR1, {inverse:true})}</td>`   : ''}
+          </tr>
+          <tr>
+            <td><strong>T. medio 1ª resp. T2 (min lab.)</strong></td>
+            <td class="right">${g.avgFR2 ?? '—'}</td>
+            ${prev ? `<td class="right">${prev.general.avgFR2 ?? '—'}</td><td class="right">${variationCell(g.avgFR2, prev.general.avgFR2, {inverse:true})}</td>` : ''}
+            ${yoy  ? `<td class="right">${yoy.general.avgFR2 ?? '—'}</td><td class="right">${variationCell(g.avgFR2, yoy.general.avgFR2, {inverse:true})}</td>`   : ''}
+          </tr>
+        </tbody>
+      </table>
+      <div style="font-size:10px;color:#8899bb;margin-top:8px;line-height:1.5">
+        Verde = mejora (más volumen/resueltos, mejor SLA, menos tiempo) · Rojo = empeora · Tiempos: bajada es mejor (más rápido)
+      </div>
+    </div>`;
+  }
+
+  html += `
     <div class="section">
       <h2>⏱️ Tiempos y SLA (minutos laborables)</h2>
       <div class="kpi-grid">
@@ -336,8 +427,24 @@ function render(d) {
           </tr>
         </tbody>
       </table>
-    </div>
+    </div>`;
 
+  // ── Evolución mensual ──
+  if (d.monthlyEvo && d.monthlyEvo.length > 0) {
+    html += `
+    <div class="charts-grid">
+      <div class="chart-card">
+        <div class="chart-title">Evolución mensual del año — Volumen KPI</div>
+        <div class="chart-container" style="height:240px"><canvas id="ch-evo-vol"></canvas></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-title">Evolución mensual del año — % SLA T1 / T2</div>
+        <div class="chart-container" style="height:240px"><canvas id="ch-evo-sla"></canvas></div>
+      </div>
+    </div>`;
+  }
+
+  html += `
     <div class="charts-grid">
       <div class="chart-card">
         <div class="chart-title">Composición del universo</div>
@@ -354,34 +461,14 @@ function render(d) {
       <table>
         <thead><tr><th>Tipo</th><th class="right">Tickets</th><th class="right">% del equipo</th><th class="right">¿Entra en KPI?</th></tr></thead>
         <tbody>
-          <tr>
-            <td><strong>Tipo 1</strong></td>
-            <td class="right blue">${d.byTipo.tipo1}</td>
-            <td class="right">${d.universo.totalTeam > 0 ? (d.byTipo.tipo1/d.universo.totalTeam*100).toFixed(1) : '0'}%</td>
-            <td class="right green">Sí</td>
-          </tr>
-          <tr>
-            <td><strong>Tipo 2</strong></td>
-            <td class="right blue">${d.byTipo.tipo2}</td>
-            <td class="right">${d.universo.totalTeam > 0 ? (d.byTipo.tipo2/d.universo.totalTeam*100).toFixed(1) : '0'}%</td>
-            <td class="right green">Sí</td>
-          </tr>
-          <tr>
-            <td><strong>Tipo 3</strong></td>
-            <td class="right gray">${d.byTipo.tipo3}</td>
-            <td class="right">${d.universo.totalTeam > 0 ? (d.byTipo.tipo3/d.universo.totalTeam*100).toFixed(1) : '0'}%</td>
-            <td class="right gray">No (informativo)</td>
-          </tr>
-          <tr>
-            <td><strong>Sin Tipo</strong></td>
-            <td class="right gray">${d.byTipo.sinTipo}</td>
-            <td class="right">${d.universo.totalTeam > 0 ? (d.byTipo.sinTipo/d.universo.totalTeam*100).toFixed(1) : '0'}%</td>
-            <td class="right gray">No (informativo)</td>
-          </tr>
+          <tr><td><strong>Tipo 1</strong></td><td class="right blue">${cur.byTipo.tipo1}</td><td class="right">${cur.universo.totalTeam > 0 ? (cur.byTipo.tipo1/cur.universo.totalTeam*100).toFixed(1) : '0'}%</td><td class="right green">Sí</td></tr>
+          <tr><td><strong>Tipo 2</strong></td><td class="right blue">${cur.byTipo.tipo2}</td><td class="right">${cur.universo.totalTeam > 0 ? (cur.byTipo.tipo2/cur.universo.totalTeam*100).toFixed(1) : '0'}%</td><td class="right green">Sí</td></tr>
+          <tr><td><strong>Tipo 3</strong></td><td class="right gray">${cur.byTipo.tipo3}</td><td class="right">${cur.universo.totalTeam > 0 ? (cur.byTipo.tipo3/cur.universo.totalTeam*100).toFixed(1) : '0'}%</td><td class="right gray">No (informativo)</td></tr>
+          <tr><td><strong>Sin Tipo</strong></td><td class="right gray">${cur.byTipo.sinTipo}</td><td class="right">${cur.universo.totalTeam > 0 ? (cur.byTipo.sinTipo/cur.universo.totalTeam*100).toFixed(1) : '0'}%</td><td class="right gray">No (informativo)</td></tr>
         </tbody>
       </table>
-      ${d.informativos.sinTipo > 0 || d.informativos.invalidByTipif > 0 ?
-        `<div class="compare-note">⚠️ Datos a revisar: ${d.informativos.sinTipo} tickets sin tipo cliente · ${d.informativos.invalidByTipif} marcados como invalid_ticket (ya excluidos del KPI)</div>` : ''}
+      ${cur.byTipo.sinTipo > 0 || cur.informativos.invalidByTipif > 0 ?
+        `<div class="compare-note">⚠️ ${cur.byTipo.sinTipo} tickets sin tipo cliente · ${cur.informativos.invalidByTipif} marcados como invalid_ticket (ya excluidos del KPI)</div>` : ''}
     </div>
 
     <div class="info-bar">
@@ -398,12 +485,48 @@ function render(d) {
   dash.style.display = 'block';
 
   // Charts
+  if (d.monthlyEvo && d.monthlyEvo.length > 0) {
+    const labels = d.monthlyEvo.map(m => m.monthLabel);
+    new Chart(document.getElementById('ch-evo-vol'), {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          { label: 'Volumen KPI', data: d.monthlyEvo.map(m => m.totalKpi), backgroundColor: '#1e3a6e', borderRadius: 3 },
+          { label: 'Resueltos',    data: d.monthlyEvo.map(m => m.resolved), backgroundColor: '#27ae60', borderRadius: 3 },
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { position: 'bottom', labels: { font: { size: 11 } } } },
+        scales: { y: { grid: { color: '#f0f2f7' } } }
+      }
+    });
+    new Chart(document.getElementById('ch-evo-sla'), {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          { label: 'SLA T1', data: d.monthlyEvo.map(m => m.sla1), borderColor: '#1e3a6e', tension: 0.3, pointRadius: 4, fill: false },
+          { label: 'SLA T2', data: d.monthlyEvo.map(m => m.sla2), borderColor: '#8e44ad', tension: 0.3, pointRadius: 4, fill: false },
+          { label: 'Std T1 (50%)', data: labels.map(() => 50), borderColor: '#1e3a6e', borderDash: [4,3], pointRadius: 0, fill: false, borderWidth: 1.5 },
+          { label: 'Std T2 (75%)', data: labels.map(() => 75), borderColor: '#8e44ad', borderDash: [4,3], pointRadius: 0, fill: false, borderWidth: 1.5 },
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { position: 'bottom', labels: { font: { size: 10 } } } },
+        scales: { y: { min: 0, max: 100, ticks: { callback: v => v + '%' } } }
+      }
+    });
+  }
+
   new Chart(document.getElementById('ch-universo'), {
     type: 'doughnut',
     data: {
       labels: ['Tipo 1 (KPI)', 'Tipo 2 (KPI)', 'Tipo 3 (informativo)', 'Sin Tipo (informativo)'],
       datasets: [{
-        data: [d.byTipo.tipo1, d.byTipo.tipo2, d.byTipo.tipo3, d.byTipo.sinTipo],
+        data: [cur.byTipo.tipo1, cur.byTipo.tipo2, cur.byTipo.tipo3, cur.byTipo.sinTipo],
         backgroundColor: ['#1e3a6e', '#8e44ad', '#8899bb', '#dde3ee'],
         borderWidth: 2, borderColor: '#fff'
       }]
@@ -430,9 +553,8 @@ function render(d) {
     }
   });
 
-  // Cache info
   document.getElementById('cache-info').textContent =
-    `${d.universo.totalKpi} tickets KPI · actualizado ${new Date().toLocaleTimeString('es-ES', {hour:'2-digit',minute:'2-digit'})}`;
+    `${cur.universo.totalKpi} tickets KPI · actualizado ${new Date().toLocaleTimeString('es-ES', {hour:'2-digit',minute:'2-digit'})}`;
 }
 
 loadCurrent();

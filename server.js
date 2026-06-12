@@ -214,26 +214,14 @@ function computeStats() {
 }
 
 // ── /api/kpi (NUEVO) ─────────────────────────────────────────────────────────
-function computeKpiPanel(period) {
-  const metricsById = {};
-  cache.metrics.forEach(m => { metricsById[m.ticket_id] = m; });
-  const { start, end } = canon.getDateRange(period);
+// Helper interno: calcula KPIs canónicos para un rango arbitrario [start, end]
+function computeRange(start, end, metricsById) {
   const allValid   = cache.tickets.filter(canon.isValidTicket);
   const periodAll  = allValid.filter(t => canon.inPeriod(t, start, end));
   const periodTeam = canon.teamTickets(periodAll, TEAM);
   const periodKpi  = canon.kpiTickets(periodTeam);
-  const general = canon.computePeriodSummary(periodKpi, metricsById);
-  const byTipo = {};
-  ['tipo_cliente_1', 'tipo_cliente_2', 'tipo_cliente_3', null].forEach(k => {
-    byTipo[k || 'sin_tipo'] = periodTeam.filter(t => canon.getTipoCliente(t) === k).length;
-  });
-  const informativos = {
-    tipo3:    byTipo.tipo_cliente_3,
-    sinTipo:  byTipo.sin_tipo,
-    invalidByTipif: periodAll.filter(t => canon.getTipificacion(t) === 'invalid_ticket').length,
-  };
+  const general    = canon.computePeriodSummary(periodKpi, metricsById);
   return {
-    period,
     desde: start.toISOString().slice(0,10),
     hasta: end.toISOString().slice(0,10),
     universo: {
@@ -243,10 +231,61 @@ function computeKpiPanel(period) {
     },
     general,
     byTipo: {
-      tipo1: byTipo.tipo_cliente_1, tipo2: byTipo.tipo_cliente_2,
-      tipo3: byTipo.tipo_cliente_3, sinTipo: byTipo.sin_tipo,
+      tipo1:   periodTeam.filter(t => canon.getTipoCliente(t) === 'tipo_cliente_1').length,
+      tipo2:   periodTeam.filter(t => canon.getTipoCliente(t) === 'tipo_cliente_2').length,
+      tipo3:   periodTeam.filter(t => canon.getTipoCliente(t) === 'tipo_cliente_3').length,
+      sinTipo: periodTeam.filter(t => canon.getTipoCliente(t) === null).length,
     },
-    informativos,
+    informativos: {
+      invalidByTipif: periodAll.filter(t => canon.getTipificacion(t) === 'invalid_ticket').length,
+    },
+  };
+}
+
+function computeKpiPanel(period) {
+  const metricsById = {};
+  cache.metrics.forEach(m => { metricsById[m.ticket_id] = m; });
+  const { start, end } = canon.getDateRange(period);
+  const current = computeRange(start, end, metricsById);
+
+  // Comparativas
+  const prevRange = canon.getPreviousRange(period);
+  const yoyRange  = canon.getSamePeriodLastYear(period);
+  const previous  = prevRange ? { ...computeRange(prevRange.start, prevRange.end, metricsById), label: prevRange.label } : null;
+  const yoy       = yoyRange  ? { ...computeRange(yoyRange.start,  yoyRange.end,  metricsById), label: yoyRange.label  } : null;
+
+  // Evolución mensual del año actual (para gráfico). Solo si period ∈ {current_month, last_month, year}.
+  let monthlyEvo = null;
+  if (['current_month', 'last_month', 'year'].includes(period)) {
+    const now = new Date();
+    const year = now.getFullYear();
+    const upToMonth = now.getMonth(); // 0-indexed, hasta el mes actual incluido
+    monthlyEvo = [];
+    for (let m = 0; m <= upToMonth; m++) {
+      const mStart = new Date(year, m, 1, 0, 0, 0, 0);
+      const mEnd   = m === upToMonth
+        ? now
+        : new Date(year, m + 1, 0, 23, 59, 59, 999);
+      const r = computeRange(mStart, mEnd, metricsById);
+      monthlyEvo.push({
+        month: m + 1,
+        monthLabel: ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'][m],
+        desde: r.desde, hasta: r.hasta,
+        totalKpi: r.universo.totalKpi,
+        totalTeam: r.universo.totalTeam,
+        resolved: r.general.resolved,
+        sla1: r.general.sla1, sla2: r.general.sla2,
+        avgFR1: r.general.avgFR1, avgFR2: r.general.avgFR2,
+      });
+    }
+  }
+
+  return {
+    period,
+    current: { ...current, label: period },
+    previous,
+    yoy,
+    monthlyEvo,
   };
 }
 
