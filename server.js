@@ -79,20 +79,37 @@ function reloadTecnicos() {
 }
 
 // ── Checkpoint y llamadas ────────────────────────────────────────────────────
+// CHECKPOINT v2: solo guarda cursor (afterUrl) + savedAt. NO guarda los tickets,
+// que en el formato anterior podían crecer a 150+ MB y provocar OOM al arrancar.
+// Si encontramos un checkpoint v1 (con tickets dentro), lo ignoramos y arrancamos
+// de cero. La carga incremental posterior reconstruye el caché en memoria.
+const CHECKPOINT_MAX_BYTES = 5 * 1024 * 1024; // 5 MB de margen para v2
+
 function loadCheckpoint() {
   if (!fs.existsSync(CHECKPOINT_FILE)) return null;
   try {
+    const stats = fs.statSync(CHECKPOINT_FILE);
+    if (stats.size > CHECKPOINT_MAX_BYTES) {
+      console.warn(`checkpoint.json pesa ${(stats.size/1024/1024).toFixed(1)} MB (>5 MB). Formato antiguo, se ignora para evitar OOM. Se reconstruirá al guardar.`);
+      return null;
+    }
     const cp = JSON.parse(fs.readFileSync(CHECKPOINT_FILE, 'utf8'));
-    console.log(`Checkpoint cargado: ${cp.tickets?.length || 0} tickets, savedAt: ${cp.savedAt || '?'}`);
+    // Compatibilidad: si trae 'tickets' lo descartamos también (formato viejo)
+    if (Array.isArray(cp.tickets) && cp.tickets.length > 0) {
+      console.warn(`Checkpoint v1 detectado (con ${cp.tickets.length} tickets dentro). Se ignora, solo se aprovecha afterUrl.`);
+      return cp.afterUrl ? { afterUrl: cp.afterUrl, savedAt: cp.savedAt } : null;
+    }
+    console.log(`Checkpoint cargado: afterUrl=${!!cp.afterUrl}, savedAt: ${cp.savedAt || '?'}`);
     return cp;
   } catch (e) { console.warn('checkpoint.json no legible:', e.message); return null; }
 }
 
 function saveCheckpoint(tickets, afterUrl) {
+  // tickets se pasa por compatibilidad de firma; ya NO se persiste (ver arriba).
   try {
-    const cp = { tickets, afterUrl, savedAt: new Date().toISOString() };
+    const cp = { afterUrl, savedAt: new Date().toISOString(), ticketsSeen: tickets?.length || 0 };
     fs.writeFileSync(CHECKPOINT_FILE, JSON.stringify(cp));
-    console.log(`Checkpoint guardado: ${tickets.length} tickets`);
+    console.log(`Checkpoint guardado (ligero): afterUrl=${!!afterUrl}, ticketsSeen=${cp.ticketsSeen}`);
   } catch (e) { console.warn('No se pudo guardar checkpoint:', e.message); }
 }
 
@@ -144,10 +161,13 @@ async function fetchAll(startUrl) {
 
 async function fetchIncremental() {
   const cp = loadCheckpoint();
-  let items = cp ? [...cp.tickets] : [];
+  // Checkpoint v2: NO trae tickets, solo afterUrl. Arrancamos siempre con items=[]
+  // y dejamos que el cursor continúe donde lo dejó. La caché en memoria se
+  // reconstruye, pero el cursor evita reescanear desde el inicio.
+  let items = [];
   let startUrl;
   if (cp && cp.afterUrl) {
-    console.log(`Reanudando desde checkpoint: ${items.length} tickets ya cargados`);
+    console.log(`Reanudando desde checkpoint v2 (cursor): savedAt=${cp.savedAt}`);
     startUrl = cp.afterUrl;
   } else {
     console.log('Primera carga completa desde el inicio...');
@@ -156,7 +176,13 @@ async function fetchIncremental() {
   let url = startUrl, page = 0, lastAfterUrl = cp?.afterUrl || null;
   while (url) {
     page++;
-    if (page % 10 === 0) console.log(`  Tickets: página ${page} (${items.length} total)...`);
+    if (page % 10 === 0) {
+      console.log(`  Tickets: página ${page} (${items.length} total)...`);
+      // Checkpoint intermedio cada 10 páginas (~1000 tickets) — ahora es muy
+      // barato porque solo guardamos afterUrl. Así si Railway nos mata, al
+      // volver retomamos donde íbamos.
+      if (lastAfterUrl) saveCheckpoint(items, lastAfterUrl);
+    }
     const r = await fetch(url, { headers: HEADERS });
     if (r.status === 429) {
       const wait = parseInt(r.headers.get('retry-after') || '60');
@@ -424,7 +450,15 @@ app.use(express.static(path.join(__dirname), staticOpts));
 app.get('/health', (req, res) => {
   let cp = null;
   if (fs.existsSync(CHECKPOINT_FILE)) {
-    try { const raw = JSON.parse(fs.readFileSync(CHECKPOINT_FILE,'utf8')); cp = { tickets: raw.tickets?.length || 0, savedAt: raw.savedAt, hasAfterUrl: !!raw.afterUrl }; } catch(e) {}
+    try {
+      const stats = fs.statSync(CHECKPOINT_FILE);
+      if (stats.size > CHECKPOINT_MAX_BYTES) {
+        cp = { sizeBytes: stats.size, note: 'checkpoint v1 antiguo, ignorado por tamaño' };
+      } else {
+        const raw = JSON.parse(fs.readFileSync(CHECKPOINT_FILE, 'utf8'));
+        cp = { savedAt: raw.savedAt, hasAfterUrl: !!raw.afterUrl, ticketsSeen: raw.ticketsSeen || 0, sizeBytes: stats.size };
+      }
+    } catch(e) { cp = { error: e.message }; }
   }
   res.json({
     ok: true, version: 'v5', time: new Date().toISOString(),
