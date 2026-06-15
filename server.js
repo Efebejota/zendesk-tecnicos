@@ -460,6 +460,158 @@ app.get('/api/kpi', (req, res) => {
   res.json(computeKpiPanel(period));
 });
 
+// NUEVO: los 5 períodos en una sola petición (para evitar refetch en cada cambio de pestaña).
+// Reutiliza computeKpiPanel, que ya excluye/incluye comparativas según el período.
+app.get('/api/kpi/all', (req, res) => {
+  if (!cache.stats) {
+    if (!cache.loading) loadInBackground(false);
+    return res.status(202).json({ error: 'Caché aún cargando', stage: cache.loadingStage, partial: cache.ticketsPartial });
+  }
+  const periods = ['current_week', 'last_week', 'current_month', 'last_month', 'year'];
+  const result = {};
+  periods.forEach(p => { result[p] = computeKpiPanel(p); });
+  res.json({ periods: result, generadoAt: new Date().toISOString() });
+});
+
+// ── /api/kpi/direccion — panel de Dirección ───────────────────────────────────
+// Devuelve en una sola petición:
+//  · sla.{semanaAnterior, mesActual, anioActual} (T1, T2, media + tiempos)
+//  · slaEvoMensual y tiemposEvoMensual del año actual
+//  · llamadasSemanas (hasta 16 semanas cerradas hacia atrás)
+//  · llamadasAcum {semanaUltCerrada, mesActual, ultimoMesCerrado, anioActual}
+// El cliente no calcula nada: pinta lo que llega.
+function computeDireccionPanel() {
+  const metricsById = {};
+  cache.metrics.forEach(m => { metricsById[m.ticket_id] = m; });
+  const now = new Date();
+  const year = now.getFullYear();
+  const upToMonth = now.getMonth();
+
+  // Helper: para un rango, devuelve {kpi (solo T1+T2 equipo), team (todo equipo válido)}
+  const slice = (start, end) => {
+    const allValid = cache.tickets.filter(canon.isValidTicket);
+    const inP = allValid.filter(t => canon.inPeriod(t, start, end));
+    const team = canon.teamTickets(inP, TEAM);
+    const kpi = canon.kpiTickets(team);
+    return { kpi, team, summary: canon.computePeriodSummary(kpi, metricsById) };
+  };
+
+  // SLA — semana anterior cerrada, mes actual (acumulado), año actual (acumulado)
+  const wkPrev = canon.getWeekRangeBack(1);
+  const semAnterior = slice(wkPrev.start, wkPrev.end);
+  const mesActStart = new Date(year, upToMonth, 1, 0, 0, 0, 0);
+  const mesActual = slice(mesActStart, now);
+  const anioStart = new Date(year, 0, 1, 0, 0, 0, 0);
+  const anioActual = slice(anioStart, now);
+
+  const sla = {
+    semanaAnterior: {
+      desde: wkPrev.start.toISOString().slice(0,10), hasta: wkPrev.end.toISOString().slice(0,10),
+      isoWeek: wkPrev.isoWeek,
+      sla1: semAnterior.summary.sla1, sla2: semAnterior.summary.sla2,
+      slaMedia: combineSLA(semAnterior.summary),
+      avgFR1: semAnterior.summary.avgFR1, avgFR2: semAnterior.summary.avgFR2,
+      total: semAnterior.kpi.length,
+    },
+    mesActual: {
+      desde: mesActStart.toISOString().slice(0,10), hasta: now.toISOString().slice(0,10),
+      sla1: mesActual.summary.sla1, sla2: mesActual.summary.sla2,
+      slaMedia: combineSLA(mesActual.summary),
+      avgFR1: mesActual.summary.avgFR1, avgFR2: mesActual.summary.avgFR2,
+      total: mesActual.kpi.length,
+    },
+    anioActual: {
+      desde: anioStart.toISOString().slice(0,10), hasta: now.toISOString().slice(0,10),
+      sla1: anioActual.summary.sla1, sla2: anioActual.summary.sla2,
+      slaMedia: combineSLA(anioActual.summary),
+      avgFR1: anioActual.summary.avgFR1, avgFR2: anioActual.summary.avgFR2,
+      total: anioActual.kpi.length,
+    },
+  };
+
+  // Evolución mensual del año (SLA y tiempos)
+  const slaEvoMensual = [];
+  for (let m = 0; m <= upToMonth; m++) {
+    const mStart = new Date(year, m, 1, 0, 0, 0, 0);
+    const mEnd   = m === upToMonth ? now : new Date(year, m + 1, 0, 23, 59, 59, 999);
+    const sl = slice(mStart, mEnd);
+    slaEvoMensual.push({
+      month: m + 1,
+      monthLabel: ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'][m],
+      sla1: sl.summary.sla1, sla2: sl.summary.sla2,
+      slaMedia: combineSLA(sl.summary),
+      avgFR1: sl.summary.avgFR1, avgFR2: sl.summary.avgFR2,
+    });
+  }
+
+  // Llamadas semanales (hasta 16 semanas cerradas hacia atrás).
+  // Universo: equipo TAT (tech+mailbox) válidos. Métrica: % con llamada outbound.
+  const isoWeekCur = canon.getISOWeekNumber(now);
+  const numSemanas = Math.min(isoWeekCur - 1, 16); // no incluye la semana actual parcial
+  const llamadasSemanas = [];
+  for (let w = numSemanas; w >= 1; w--) {
+    const r = canon.getWeekRangeBack(w);
+    const allValid = cache.tickets.filter(canon.isValidTicket);
+    const inP = allValid.filter(t => canon.inPeriod(t, r.start, r.end));
+    const team = canon.teamTickets(inP, TEAM);
+    const conLlamada = team.filter(t => tieneLlamada(t.id)).length;
+    llamadasSemanas.push({
+      label: 'S' + r.isoWeek,
+      isoWeek: r.isoWeek,
+      desde: r.start.toISOString().slice(0,10),
+      hasta: r.end.toISOString().slice(0,10),
+      total: team.length,
+      conLlamada,
+      pct: team.length > 0 ? conLlamada / team.length * 100 : 0,
+    });
+  }
+
+  // Acumulados de llamadas
+  const allValid = cache.tickets.filter(canon.isValidTicket);
+  const sliceLlamadas = (start, end) => {
+    const inP = allValid.filter(t => canon.inPeriod(t, start, end));
+    const team = canon.teamTickets(inP, TEAM);
+    const cL = team.filter(t => tieneLlamada(t.id)).length;
+    return { total: team.length, conLlamada: cL, pct: team.length > 0 ? cL / team.length * 100 : 0 };
+  };
+
+  const ultMesStart = new Date(year, upToMonth - 1, 1, 0, 0, 0, 0);
+  const ultMesEnd   = new Date(year, upToMonth, 0, 23, 59, 59, 999);
+  const llamadasAcum = {
+    semanaUltCerrada: llamadasSemanas.length > 0 ? llamadasSemanas[llamadasSemanas.length - 1] : null,
+    mesActual:        sliceLlamadas(mesActStart, now),
+    ultimoMesCerrado: { ...sliceLlamadas(ultMesStart, ultMesEnd), desde: ultMesStart.toISOString().slice(0,10), hasta: ultMesEnd.toISOString().slice(0,10), monthLabel: ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'][upToMonth - 1] + ' ' + year },
+    anioActual:       sliceLlamadas(anioStart, now),
+  };
+
+  return {
+    year,
+    generadoAt: new Date().toISOString(),
+    sla,
+    slaEvoMensual,
+    llamadasSemanas,
+    llamadasAcum,
+    scanLlamadasMeta: { ...(llamadasCache.meta || {}), scanning: scanState.running },
+  };
+}
+
+// Combina SLA T1 + T2 ponderado por número de tickets (no promedio simple).
+function combineSLA(summary) {
+  const d1 = summary.sla1Den || 0, d2 = summary.sla2Den || 0;
+  if (d1 + d2 === 0) return null;
+  const cumple1 = summary.sla1 != null ? Math.round(summary.sla1 * d1 / 100) : 0;
+  const cumple2 = summary.sla2 != null ? Math.round(summary.sla2 * d2 / 100) : 0;
+  return Math.round((cumple1 + cumple2) / (d1 + d2) * 100);
+}
+
+app.get('/api/kpi/direccion', (req, res) => {
+  if (!cache.stats) {
+    if (!cache.loading) loadInBackground(false);
+    return res.status(202).json({ error: 'Caché aún cargando', stage: cache.loadingStage, partial: cache.ticketsPartial });
+  }
+  res.json(computeDireccionPanel());
+});
+
 app.get('/api/stats', (req, res) => {
   if (!cache.stats) {
     if (!cache.loading) loadInBackground(false);
@@ -519,12 +671,8 @@ app.get('/api/llamadas/scan', (req, res) => {
   runScanLlamadas(desde, hasta, 'manual');
 });
 
-app.get('/api/llamadas/stats', (req, res) => {
-  if (!cache.stats) {
-    if (!cache.loading) loadInBackground(false);
-    return res.status(202).json({ error: 'Caché principal aún cargando', stage: cache.loadingStage, partial: cache.ticketsPartial, llamadasMeta: { ...(llamadasCache.meta || {}), scanning: scanState.running } });
-  }
-  const period = req.query.period || 'current_month';
+// Helper compartido: KPIs de llamadas para un período concreto (canon).
+function computeLlamadasPeriod(period) {
   const { start, end } = canon.getDateRange(period);
   const allValid = cache.tickets.filter(canon.isValidTicket);
   const periodAll = allValid.filter(t => canon.inPeriod(t, start, end));
@@ -542,10 +690,36 @@ app.get('/api/llamadas/stats', (req, res) => {
       role: tec.role,
     };
   });
-  res.json({
+  return {
     period, desde: start.toISOString().slice(0,10), hasta: end.toISOString().slice(0,10),
     total, conLlamada, pct: total ? Math.round(conLlamada/total*100) : null,
-    byAgent, llamadasMeta: { ...(llamadasCache.meta || {}), scanning: scanState.running },
+    byAgent,
+  };
+}
+
+app.get('/api/llamadas/stats', (req, res) => {
+  if (!cache.stats) {
+    if (!cache.loading) loadInBackground(false);
+    return res.status(202).json({ error: 'Caché principal aún cargando', stage: cache.loadingStage, partial: cache.ticketsPartial, llamadasMeta: { ...(llamadasCache.meta || {}), scanning: scanState.running } });
+  }
+  const period = req.query.period || 'current_month';
+  const data = computeLlamadasPeriod(period);
+  res.json({ ...data, llamadasMeta: { ...(llamadasCache.meta || {}), scanning: scanState.running } });
+});
+
+// NUEVO: los 5 períodos en una sola petición (cambio de pestaña instantáneo en el cliente).
+app.get('/api/llamadas/stats/all', (req, res) => {
+  if (!cache.stats) {
+    if (!cache.loading) loadInBackground(false);
+    return res.status(202).json({ error: 'Caché principal aún cargando', stage: cache.loadingStage, partial: cache.ticketsPartial, llamadasMeta: { ...(llamadasCache.meta || {}), scanning: scanState.running } });
+  }
+  const periods = ['current_week', 'last_week', 'current_month', 'last_month', 'year'];
+  const result = {};
+  periods.forEach(p => { result[p] = computeLlamadasPeriod(p); });
+  res.json({
+    periods: result,
+    llamadasMeta: { ...(llamadasCache.meta || {}), scanning: scanState.running },
+    generadoAt: new Date().toISOString(),
   });
 });
 

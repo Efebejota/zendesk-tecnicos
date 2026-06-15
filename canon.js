@@ -124,6 +124,28 @@ function inPeriod(ticket, start, end) {
   return d >= start && d <= end;
 }
 
+// ── Numeración ISO de semana ─────────────────────────────────────────────────
+// Número de semana ISO 8601 (lunes-domingo, primera semana es la que contiene
+// el primer jueves del año). Útil para etiquetas tipo "S23".
+function getISOWeekNumber(date) {
+  const d = new Date(date);
+  d.setHours(0,0,0,0);
+  d.setDate(d.getDate() + 3 - (d.getDay() + 6) % 7);
+  const week1 = new Date(d.getFullYear(), 0, 4);
+  return 1 + Math.round(((d.getTime() - week1.getTime()) / 86400000 - 3 + (week1.getDay() + 6) % 7) / 7);
+}
+
+// Rango de una semana N hacia atrás contando desde "ahora". weeksAgo=0 es la
+// semana actual (parcial). weeksAgo=1 es la última cerrada. Semana laborable L-V.
+function getWeekRangeBack(weeksAgo, refDate) {
+  const now = refDate || new Date();
+  const day = now.getDay() || 7;
+  const monCur = new Date(now); monCur.setDate(now.getDate() - day + 1); monCur.setHours(0,0,0,0);
+  const start = new Date(monCur); start.setDate(monCur.getDate() - weeksAgo * 7);
+  const end = new Date(start); end.setDate(start.getDate() + 4); end.setHours(23,59,59,999);
+  return { start, end, isoWeek: getISOWeekNumber(start) };
+}
+
 // ── Rangos comparativos ──────────────────────────────────────────────────────
 // Para un período, devuelve el "anterior" inmediato (mes-1, semana-1, año YTD = año anterior YTD).
 function getPreviousRange(period, refDate) {
@@ -257,6 +279,7 @@ module.exports = {
   getField, getTipoCliente, getPuntos, getTipificacion,
   isValidTicket, getDateRange, inPeriod,
   getPreviousRange, getSamePeriodLastYear,
+  getISOWeekNumber, getWeekRangeBack,
   getBusinessFR, getBusinessRes, slaCumplido,
   // filtros canónicos
   teamTickets, kpiTickets,

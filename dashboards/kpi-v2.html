@@ -89,6 +89,23 @@ tr:last-child td { border-bottom: none; }
 .sla-pill-warn { background: #fef4e0; color: #b45309; }
 .sla-pill-bad { background: #fde8ea; color: #c0392b; }
 .sla-pill-none { background: #f0f0f8; color: #aaa; }
+
+/* Panel Dirección */
+.dir-table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
+.dir-table th { background: #1e3a6e; color: #fff; padding: 9px 12px; font-size: 11px; text-align: left; font-weight: 600; }
+.dir-table th.right, .dir-table td.right { text-align: right; }
+.dir-table td { padding: 9px 12px; border-bottom: 1px solid #f0f2f7; font-size: 12px; }
+.dir-table tr.dir-media td { border-top: 2px solid #dde3ee; background: #f8fafd; font-weight: 600; }
+.dir-cell-sem { background: #f5fbff; }
+.dir-cell-mes { background: #f5fff8; }
+.dir-cell-anio { background: #fbf8ff; }
+.dir-cell-sem-h { background: #edf5fd; }
+.dir-cell-mes-h { background: #edfaf2; }
+.dir-cell-anio-h { background: #f5eefb; }
+.desv-pill { display: inline-block; padding: 2px 8px; border-radius: 4px; font-weight: 700; font-size: 11px; }
+.desv-good { background: #e8f8f0; color: #27ae60; }
+.desv-bad  { background: #fdecea; color: #e74c3c; }
+.desv-none { background: #f0f0f8; color: #999; }
 </style>
 </head>
 <body>
@@ -98,7 +115,7 @@ tr:last-child td { border-bottom: none; }
   <div>
     <span class="cache-info" id="cache-info"></span>
     <a href="kpi.html" class="btn secondary" style="text-decoration:none">← KPI v1 (referencia)</a>
-    <button class="btn" onclick="loadCurrent()">↻ Actualizar</button>
+    <button class="btn" onclick="forceRefresh()">↻ Actualizar</button>
   </div>
 </div>
 
@@ -108,6 +125,7 @@ tr:last-child td { border-bottom: none; }
   <button class="tab" data-period="year">Acumulado Año</button>
   <button class="tab" data-period="current_week">Semana Actual</button>
   <button class="tab" data-period="last_week">Semana Pasada</button>
+  <button class="tab" data-period="direccion" style="margin-left:auto;background:#1e3a6e;color:#fff;border-radius:6px 6px 0 0">📊 Dirección</button>
 </div>
 
 <div id="content">
@@ -162,12 +180,29 @@ function fmtPct(v, std) {
 let currentPeriod = 'current_month';
 let _retryDelay = 15000;
 let _seq = 0;
+let _allKpi = null;    // cache local: { current_week, last_week, current_month, last_month, year }
+let _statsData = null; // cache local: /api/stats (común a las 5 pestañas)
+let _direccionData = null; // cache local: /api/kpi/direccion
 
 document.querySelectorAll('.tab').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     btn.classList.add('active');
     currentPeriod = btn.dataset.period;
+    // Si tenemos los datos en cache local, pintar al instante (sin red)
+    if (currentPeriod === 'direccion' && _direccionData) {
+      Object.values(Chart.instances || {}).forEach(c => c.destroy());
+      document.getElementById('loading').style.display = 'none';
+      renderDireccion(_direccionData);
+      return;
+    }
+    if (currentPeriod !== 'direccion' && _allKpi && _allKpi[currentPeriod] && _statsData) {
+      Object.values(Chart.instances || {}).forEach(c => c.destroy());
+      document.getElementById('loading').style.display = 'none';
+      render(_allKpi[currentPeriod], _statsData);
+      return;
+    }
+    // Sin cache: petición normal
     loadCurrent();
   });
 });
@@ -178,6 +213,14 @@ function loadCurrent() {
   showLoading();
   document.getElementById('error-box').style.display = 'none';
   fetchAndRender(_seq);
+}
+
+// Botón Actualizar (top): fuerza recarga invalidando la cache local.
+function forceRefresh() {
+  _allKpi = null;
+  _statsData = null;
+  _direccionData = null;
+  loadCurrent();
 }
 
 function showLoading() {
@@ -191,19 +234,38 @@ function showError(msg) {
   const eb = document.getElementById('error-box');
   eb.style.display = 'block';
   eb.innerHTML = `<strong>Error</strong><br><small>${msg}</small><br><br>
-    <button class="btn" onclick="loadCurrent()">Reintentar</button>`;
+    <button class="btn" onclick="forceRefresh()">Reintentar</button>`;
 }
 
 async function fetchAndRender(seq) {
   if (seq !== _seq) return;
   try {
-    // Petición paralela: KPI canónico + stats por agente
+    // Pestaña Dirección: endpoint dedicado
+    if (currentPeriod === 'direccion') {
+      const r = await fetch(`${PROXY}/api/kpi/direccion?_=${Date.now()}`, { cache: 'no-store' });
+      if (r.status === 202) {
+        const d = await r.json().catch(() => ({}));
+        document.getElementById('loading').innerHTML = `
+          <div class="spinner"></div>
+          <p style="color:#1e3a6e;font-weight:600">Servidor cargando datos... etapa: ${d.stage || '?'}</p>
+          <p style="font-size:11px;color:#4e9af1">Próximo intento en ${Math.round(_retryDelay/1000)}s</p>`;
+        const delay = _retryDelay;
+        _retryDelay = Math.min(_retryDelay * 2, 60000);
+        setTimeout(() => fetchAndRender(seq), delay);
+        return;
+      }
+      if (!r.ok) throw new Error('Dirección HTTP ' + r.status);
+      _direccionData = await r.json();
+      renderDireccion(_direccionData);
+      return;
+    }
+    // Pestañas KPI: una sola petición trae los 5 períodos + stats por agente en paralelo.
+    // El cambio posterior de pestaña se sirve desde _allKpi / _statsData (sin red).
     const [rKpi, rStats] = await Promise.all([
-      fetch(`${PROXY}/api/kpi?period=${currentPeriod}&_=${Date.now()}`, { cache: 'no-store' }),
+      fetch(`${PROXY}/api/kpi/all?_=${Date.now()}`, { cache: 'no-store' }),
       fetch(`${PROXY}/api/stats?_=${Date.now()}`, { cache: 'no-store' }),
     ]);
     if (rKpi.status === 202 || rStats.status === 202) {
-      // Cualquiera de las dos en 202 ⇒ retry. Mostrar progreso del que esté cargando.
       const d = await rKpi.json().catch(() => ({}));
       const stage = d.stage || '?';
       const partial = d.partial || 0;
@@ -219,8 +281,12 @@ async function fetchAndRender(seq) {
     }
     if (!rKpi.ok) throw new Error('KPI HTTP ' + rKpi.status);
     if (!rStats.ok) throw new Error('Stats HTTP ' + rStats.status);
-    const [kpiData, statsData] = await Promise.all([rKpi.json(), rStats.json()]);
-    render(kpiData, statsData);
+    const [allJson, statsJson] = await Promise.all([rKpi.json(), rStats.json()]);
+    _allKpi = allJson.periods;
+    _statsData = statsJson;
+    const kpiData = _allKpi[currentPeriod];
+    if (!kpiData) throw new Error('Período no encontrado en respuesta');
+    render(kpiData, _statsData);
   } catch (e) {
     showError(e.message);
   }
@@ -337,6 +403,290 @@ function renderRanking(statsData, period) {
       </div>
     </div>
   `;
+}
+
+function renderDireccion(d) {
+  document.getElementById('loading').style.display = 'none';
+  Object.values(Chart.instances || {}).forEach(c => c.destroy());
+
+  // Helpers locales del panel Dirección
+  const valSLA   = v => v != null ? `<strong>${v.toFixed ? v.toFixed(1) : v}%</strong>` : '<span class="gray">—</span>';
+  const valT     = v => v != null ? `<strong>${v.toFixed ? v.toFixed(1) : v}</strong>` : '<span class="gray">—</span>';
+  const desvSLA  = (v, std) => {
+    if (v == null) return '<span class="desv-pill desv-none">—</span>';
+    const dv = v - std;
+    return `<span class="desv-pill ${dv >= 0 ? 'desv-good' : 'desv-bad'}">${dv > 0 ? '+' : ''}${dv.toFixed(1)}pp</span>`;
+  };
+  const desvT    = (v, target) => {
+    if (v == null) return '<span class="desv-pill desv-none">—</span>';
+    const dv = v - target;
+    // En tiempos: bajada es buena (más rápido)
+    return `<span class="desv-pill ${dv <= 0 ? 'desv-good' : 'desv-bad'}">${dv > 0 ? '+' : ''}${dv.toFixed(1)}</span>`;
+  };
+
+  const semL = d.sla.semanaAnterior;
+  const mesL = d.sla.mesActual;
+  const anoL = d.sla.anioActual;
+
+  const lc = d.llamadasAcum;
+  const semUlt = lc.semanaUltCerrada || { label: '—', pct: 0, conLlamada: 0, total: 0 };
+
+  // Tendencia: comparar últimas dos semanas
+  let tendencia = '—', tendCls = 'desv-none';
+  if (d.llamadasSemanas.length >= 2) {
+    const a = d.llamadasSemanas[d.llamadasSemanas.length - 1].pct;
+    const b = d.llamadasSemanas[d.llamadasSemanas.length - 2].pct;
+    const diff = a - b;
+    tendencia = (diff > 0 ? '+' : '') + diff.toFixed(1) + 'pp';
+    // Aquí "subida" puede ser bueno (más servicio) o malo (más sobrecarga telefónica) — neutro
+    tendCls = Math.abs(diff) < 0.5 ? 'desv-none' : 'desv-good';
+  }
+
+  // Scan llamadas: fresco / retrasado
+  let scanInfo = '';
+  if (d.scanLlamadasMeta?.lastScan) {
+    const ago = (Date.now() - new Date(d.scanLlamadasMeta.lastScan).getTime()) / 3600000;
+    scanInfo = ago > 24
+      ? `<span style="background:#fef4e0;color:#b45309;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:700">⚠️ scan ${ago.toFixed(0)}h sin actualizar</span>`
+      : `<span style="background:#e8f5e9;color:#2a9d8f;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:700">scan ${ago < 1 ? Math.round(ago*60)+'min' : ago.toFixed(1)+'h'}</span>`;
+  }
+  if (d.scanLlamadasMeta?.scanning) scanInfo += ' <span style="background:#fef4e0;color:#b45309;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:700">⟳ escaneando</span>';
+
+  const html = `
+    <div class="info-bar canon">
+      <strong>📊 Panel Dirección — vista semanal/mensual/anual canónica</strong>
+      &nbsp;·&nbsp; Universo: equipo TAT (tech + buzones, sin manager) · Tiempos en minutos laborables
+      <br>Std SLA T1: <strong>50%</strong> · Std SLA T2: <strong>75%</strong> · Std combinado: <strong>62.5%</strong>
+    </div>
+
+    <div class="section">
+      <h2>✅ SLA T1 y T2 — Semana Anterior / Acumulado Mes / Acumulado Año</h2>
+      <table class="dir-table">
+        <thead>
+          <tr>
+            <th>Tipo</th>
+            <th class="right">Std %SLA</th>
+            <th class="right dir-cell-sem-h">Sem. Anterior (S${semL.isoWeek})<br><small style="font-weight:400;opacity:0.8">${semL.desde} → ${semL.hasta}</small></th>
+            <th class="right dir-cell-sem-h">Desv.</th>
+            <th class="right dir-cell-mes-h">Acum. Mes<br><small style="font-weight:400;opacity:0.8">${mesL.desde} → ${mesL.hasta}</small></th>
+            <th class="right dir-cell-mes-h">Desv.</th>
+            <th class="right dir-cell-anio-h">Acum. Año<br><small style="font-weight:400;opacity:0.8">${anoL.desde} → ${anoL.hasta}</small></th>
+            <th class="right dir-cell-anio-h">Desv.</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Tipo 1 (≤15 min lab.)</strong></td>
+            <td class="right gray">50%</td>
+            <td class="right dir-cell-sem">${valSLA(semL.sla1)}</td>
+            <td class="right dir-cell-sem">${desvSLA(semL.sla1, 50)}</td>
+            <td class="right dir-cell-mes">${valSLA(mesL.sla1)}</td>
+            <td class="right dir-cell-mes">${desvSLA(mesL.sla1, 50)}</td>
+            <td class="right dir-cell-anio">${valSLA(anoL.sla1)}</td>
+            <td class="right dir-cell-anio">${desvSLA(anoL.sla1, 50)}</td>
+          </tr>
+          <tr>
+            <td><strong>Tipo 2 (≤25 min lab.)</strong></td>
+            <td class="right gray">75%</td>
+            <td class="right dir-cell-sem">${valSLA(semL.sla2)}</td>
+            <td class="right dir-cell-sem">${desvSLA(semL.sla2, 75)}</td>
+            <td class="right dir-cell-mes">${valSLA(mesL.sla2)}</td>
+            <td class="right dir-cell-mes">${desvSLA(mesL.sla2, 75)}</td>
+            <td class="right dir-cell-anio">${valSLA(anoL.sla2)}</td>
+            <td class="right dir-cell-anio">${desvSLA(anoL.sla2, 75)}</td>
+          </tr>
+          <tr class="dir-media">
+            <td><strong>Media ponderada T1+T2</strong></td>
+            <td class="right gray">62.5%</td>
+            <td class="right dir-cell-sem-h">${valSLA(semL.slaMedia)}</td>
+            <td class="right dir-cell-sem-h">${desvSLA(semL.slaMedia, 62.5)}</td>
+            <td class="right dir-cell-mes-h">${valSLA(mesL.slaMedia)}</td>
+            <td class="right dir-cell-mes-h">${desvSLA(mesL.slaMedia, 62.5)}</td>
+            <td class="right dir-cell-anio-h">${valSLA(anoL.slaMedia)}</td>
+            <td class="right dir-cell-anio-h">${desvSLA(anoL.slaMedia, 62.5)}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div style="font-size:10px;color:#8899bb">
+        Tickets: Sem. Anterior <strong>${semL.total}</strong> · Acum. Mes <strong>${mesL.total}</strong> · Acum. Año <strong>${anoL.total}</strong>
+      </div>
+    </div>
+
+    <div class="chart-card" style="margin-bottom:16px">
+      <div class="chart-title">Evolución mensual % SLA — T1, T2 y Media ponderada (con estándares)</div>
+      <div class="chart-container" style="height:240px"><canvas id="ch-dir-sla-evo"></canvas></div>
+    </div>
+
+    <div class="section">
+      <h2>⏱️ Tiempos 1ª Respuesta (min lab.) — Semana Anterior / Acum. Mes / Acum. Año</h2>
+      <table class="dir-table">
+        <thead>
+          <tr>
+            <th>Tipo</th>
+            <th class="right">Std (min)</th>
+            <th class="right dir-cell-sem-h">Sem. Anterior</th>
+            <th class="right dir-cell-sem-h">Desv.</th>
+            <th class="right dir-cell-mes-h">Acum. Mes</th>
+            <th class="right dir-cell-mes-h">Desv.</th>
+            <th class="right dir-cell-anio-h">Acum. Año</th>
+            <th class="right dir-cell-anio-h">Desv.</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Tipo 1</strong></td>
+            <td class="right gray">15 min</td>
+            <td class="right dir-cell-sem">${valT(semL.avgFR1)}</td>
+            <td class="right dir-cell-sem">${desvT(semL.avgFR1, 15)}</td>
+            <td class="right dir-cell-mes">${valT(mesL.avgFR1)}</td>
+            <td class="right dir-cell-mes">${desvT(mesL.avgFR1, 15)}</td>
+            <td class="right dir-cell-anio">${valT(anoL.avgFR1)}</td>
+            <td class="right dir-cell-anio">${desvT(anoL.avgFR1, 15)}</td>
+          </tr>
+          <tr>
+            <td><strong>Tipo 2</strong></td>
+            <td class="right gray">25 min</td>
+            <td class="right dir-cell-sem">${valT(semL.avgFR2)}</td>
+            <td class="right dir-cell-sem">${desvT(semL.avgFR2, 25)}</td>
+            <td class="right dir-cell-mes">${valT(mesL.avgFR2)}</td>
+            <td class="right dir-cell-mes">${desvT(mesL.avgFR2, 25)}</td>
+            <td class="right dir-cell-anio">${valT(anoL.avgFR2)}</td>
+            <td class="right dir-cell-anio">${desvT(anoL.avgFR2, 25)}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div style="font-size:10px;color:#8899bb">
+        Desviación positiva (rojo) = más lento que el target. Negativa (verde) = más rápido. Media sesgable por casos extremos.
+      </div>
+    </div>
+
+    <div class="chart-card" style="margin-bottom:16px">
+      <div class="chart-title">Evolución mensual Tiempos 1ª Respuesta (min lab.) — con estándares</div>
+      <div class="chart-container" style="height:240px"><canvas id="ch-dir-t-evo"></canvas></div>
+    </div>
+
+    <div class="section">
+      <h2>📞 Llamadas Telefónicas Salientes — Semanas Completas hasta ${semUlt.label} ${scanInfo}</h2>
+      <div class="kpi-grid kpi-grid-5">
+        <div class="kpi-card orange">
+          <div class="kpi-label">Sem. Última Cerrada (${semUlt.label})</div>
+          <div class="kpi-value">${semUlt.pct.toFixed(1)}%</div>
+          <div class="kpi-sub">${semUlt.conLlamada} llamadas de ${semUlt.total} tickets</div>
+        </div>
+        <div class="kpi-card blue">
+          <div class="kpi-label">Acum. Mes</div>
+          <div class="kpi-value">${lc.mesActual.pct.toFixed(1)}%</div>
+          <div class="kpi-sub">${lc.mesActual.conLlamada} de ${lc.mesActual.total}</div>
+        </div>
+        <div class="kpi-card green">
+          <div class="kpi-label">Último Mes Cerrado (${lc.ultimoMesCerrado.monthLabel})</div>
+          <div class="kpi-value">${lc.ultimoMesCerrado.pct.toFixed(1)}%</div>
+          <div class="kpi-sub">${lc.ultimoMesCerrado.conLlamada} de ${lc.ultimoMesCerrado.total}</div>
+        </div>
+        <div class="kpi-card purple">
+          <div class="kpi-label">Acum. Año ${d.year}</div>
+          <div class="kpi-value">${lc.anioActual.pct.toFixed(1)}%</div>
+          <div class="kpi-sub">${lc.anioActual.conLlamada} de ${lc.anioActual.total}</div>
+        </div>
+        <div class="kpi-card ${tendCls === 'desv-bad' ? 'red' : tendCls === 'desv-good' ? 'green' : 'gray'}">
+          <div class="kpi-label">Tendencia</div>
+          <div class="kpi-value">${tendencia}</div>
+          <div class="kpi-sub">vs semana anterior</div>
+        </div>
+      </div>
+      <div class="chart-card" style="margin-top:8px">
+        <div class="chart-title">Tickets con llamadas salientes vs total por semana</div>
+        <div class="chart-container" style="height:260px"><canvas id="ch-dir-llamadas"></canvas></div>
+      </div>
+      <div style="font-size:10px;color:#8899bb;margin-top:8px">
+        Universo: equipo TAT (tech + buzones), sin filtro de tipo de cliente. "Llamada" = comentario de voz outbound real detectado en el ticket.
+      </div>
+    </div>
+  `;
+
+  const dash = document.getElementById('dashboard');
+  dash.innerHTML = html;
+  dash.style.display = 'block';
+
+  // Gráficos
+  const evoLabels = d.slaEvoMensual.map(m => m.monthLabel);
+  new Chart(document.getElementById('ch-dir-sla-evo'), {
+    type: 'line',
+    data: {
+      labels: evoLabels,
+      datasets: [
+        { label: 'Tipo 1', data: d.slaEvoMensual.map(m => m.sla1), borderColor: '#1e3a6e', tension: 0.3, fill: false, pointRadius: 4 },
+        { label: 'Tipo 2', data: d.slaEvoMensual.map(m => m.sla2), borderColor: '#8e44ad', tension: 0.3, fill: false, pointRadius: 4 },
+        { label: 'Media T1+T2', data: d.slaEvoMensual.map(m => m.slaMedia), borderColor: '#27ae60', tension: 0.3, fill: false, pointRadius: 4, borderWidth: 2 },
+        { label: 'Std T1 (50%)', data: evoLabels.map(() => 50), borderColor: '#1e3a6e', borderDash: [5,3], pointRadius: 0, fill: false, borderWidth: 1.2 },
+        { label: 'Std T2 (75%)', data: evoLabels.map(() => 75), borderColor: '#8e44ad', borderDash: [5,3], pointRadius: 0, fill: false, borderWidth: 1.2 },
+        { label: 'Media std (62.5%)', data: evoLabels.map(() => 62.5), borderColor: '#27ae60', borderDash: [3,3], pointRadius: 0, fill: false, borderWidth: 1 },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'bottom', labels: { font: { size: 10 } } } },
+      scales: { y: { min: 0, max: 100, ticks: { callback: v => v + '%' } } }
+    }
+  });
+
+  new Chart(document.getElementById('ch-dir-t-evo'), {
+    type: 'line',
+    data: {
+      labels: evoLabels,
+      datasets: [
+        { label: 'Tipo 1 (avg)', data: d.slaEvoMensual.map(m => m.avgFR1), borderColor: '#1e3a6e', tension: 0.3, fill: false, pointRadius: 4 },
+        { label: 'Tipo 2 (avg)', data: d.slaEvoMensual.map(m => m.avgFR2), borderColor: '#8e44ad', tension: 0.3, fill: false, pointRadius: 4 },
+        { label: 'Std T1 (15min)', data: evoLabels.map(() => 15), borderColor: '#1e3a6e', borderDash: [4,3], pointRadius: 0, fill: false, borderWidth: 1.2 },
+        { label: 'Std T2 (25min)', data: evoLabels.map(() => 25), borderColor: '#8e44ad', borderDash: [4,3], pointRadius: 0, fill: false, borderWidth: 1.2 },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'bottom', labels: { font: { size: 10 } } } },
+      scales: { y: { min: 0, ticks: { callback: v => v + 'm' } } }
+    }
+  });
+
+  // Tendencia por mínimos cuadrados
+  const semanas = d.llamadasSemanas;
+  const n = semanas.length;
+  const pcts = semanas.map(s => s.pct);
+  const xMean = (n - 1) / 2;
+  const yMean = pcts.reduce((a,b) => a+b, 0) / Math.max(1, n);
+  const num = pcts.reduce((s, y, i) => s + (i - xMean) * (y - yMean), 0);
+  const den = pcts.reduce((s, _, i) => s + (i - xMean) ** 2, 0);
+  const slope = den > 0 ? num / den : 0;
+  const intercept = yMean - slope * xMean;
+  const trend = semanas.map((_, i) => intercept + slope * i);
+
+  new Chart(document.getElementById('ch-dir-llamadas'), {
+    type: 'bar',
+    data: {
+      labels: semanas.map(s => s.label),
+      datasets: [
+        { label: 'Total tickets',      data: semanas.map(s => s.total),       backgroundColor: '#c8d4e8', borderRadius: 3, yAxisID: 'y' },
+        { label: 'Tickets con llamadas', data: semanas.map(s => s.conLlamada), backgroundColor: '#1e3a6e', borderRadius: 3, yAxisID: 'y' },
+        { label: '% con llamadas',     data: pcts,                              type: 'line', borderColor: '#e74c3c', pointBackgroundColor: '#e74c3c', tension: 0.3, yAxisID: 'y2', pointRadius: 4, fill: false },
+        { label: 'Tendencia (%)',      data: trend,                             type: 'line', borderColor: '#e67e22', borderDash: [5,3], tension: 0, yAxisID: 'y2', pointRadius: 0, fill: false, borderWidth: 1.5 },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'bottom', labels: { font: { size: 10 } } },
+        tooltip: { callbacks: { label: ctx => { if (ctx.datasetIndex <= 1) return ctx.dataset.label + ': ' + ctx.parsed.y; return ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(1) + '%'; } } }
+      },
+      scales: {
+        x: { grid: { display: false } },
+        y:  { position: 'left', grid: { color: '#f0f2f7' }, title: { display: true, text: 'Tickets' } },
+        y2: { position: 'right', grid: { display: false }, ticks: { callback: v => v.toFixed(1) + '%' }, min: 0, title: { display: true, text: '%' } }
+      }
+    }
+  });
+
+  document.getElementById('cache-info').textContent =
+    `Panel Dirección · ${anoL.total} tickets KPI YTD · actualizado ${new Date().toLocaleTimeString('es-ES', {hour:'2-digit',minute:'2-digit'})}`;
 }
 
 function render(d, statsData) {

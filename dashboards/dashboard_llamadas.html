@@ -96,14 +96,21 @@
 const PROXY = 'https://zendesk-tecnicos-production.up.railway.app';
 let currentPeriod = 'current_week';
 let _retryDelay = 15000;
-let _loadSeq = 0; // invalida reintentos pendientes al cambiar de período
+let _loadSeq = 0; // invalida reintentos pendientes
+let _allData = null; // cache local con los 5 períodos
 
 document.querySelectorAll('.period-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     currentPeriod = btn.dataset.period;
-    loadData();
+    // Si ya tenemos los 5 períodos cargados, pintar al instante (sin red).
+    if (_allData && _allData.periods && _allData.periods[currentPeriod]) {
+      renderDashboard(_allData.periods[currentPeriod]);
+      updateMeta(_allData.llamadasMeta);
+    } else {
+      loadData();
+    }
   });
 });
 
@@ -115,18 +122,17 @@ async function loadData() {
   document.getElementById('statusBar').style.display = 'none';
   _retryDelay = 15000;
   _loadSeq++;
+  _allData = null; // invalidar cache al pedir refresco explícito
   await _loadDataAttempt(_loadSeq);
 }
 
 async function _loadDataAttempt(seq) {
-  if (seq !== _loadSeq) return; // hay una carga más reciente, abandonar
+  if (seq !== _loadSeq) return;
   try {
-    // FIX 304: cache-buster + no-store. El buster hace única cada URL y no-store
-    // impide peticiones condicionales (If-None-Match) que devuelven 304 con caché.
-    const r = await fetch(`${PROXY}/api/llamadas/stats?period=${currentPeriod}&_=${Date.now()}`, { cache: 'no-store' });
+    // Una sola petición trae los 5 períodos en un JSON. Cambio de pestaña
+    // posterior es instantáneo (pinta desde _allData, no toca red).
+    const r = await fetch(`${PROXY}/api/llamadas/stats/all?_=${Date.now()}`, { cache: 'no-store' });
     if (r.status === 202) {
-      // Servidor aún cargando el caché principal: mostrar progreso y el último
-      // scan conocido (viene en el cuerpo del 202), y reintentar con backoff.
       let info = '';
       try {
         const d = await r.json();
@@ -140,9 +146,11 @@ async function _loadDataAttempt(seq) {
       return;
     }
     if (!r.ok) throw new Error('Error ' + r.status);
-    const data = await r.json();
-    renderDashboard(data);
-    updateMeta(data.llamadasMeta);
+    _allData = await r.json();
+    const periodData = _allData.periods?.[currentPeriod];
+    if (!periodData) throw new Error('Período no encontrado en respuesta');
+    renderDashboard(periodData);
+    updateMeta(_allData.llamadasMeta);
     document.getElementById('statusBar').style.display = 'none';
     const btn = document.getElementById('refreshBtn');
     btn.disabled = false;
