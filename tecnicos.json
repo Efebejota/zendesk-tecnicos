@@ -15,6 +15,8 @@
     { "id": "31969556341917", "name": "Steve McDonald",       "email": "sm@mplifts.com",                  "role": "tech" },
     { "id": "25238078751389", "name": "Nicklas Jonsson",      "email": "nj@mpsweden.se",                  "role": "tech" },
     { "id": "26600564602525", "name": "Antonio Gómez",        "email": "mpcentroag@mpascensores.com",     "role": "tech" },
+    { "id": "25081523536157", "name": "Andreas Scheidl",      "email": "as@mpascensores.com",             "role": "tech" },
+    { "id": "36876629700125", "name": "Christopher Bremshey", "email": "CBR@mplifts.com",                 "role": "tech" },
     { "id": "22194513778589", "name": "Nikolao",              "email": "nikolao@mpascensores.com",        "role": "tech" },
     { "id": "34726482176285", "name": "Multimarca",           "email": "multibrand@mplifts.com",          "role": "mailbox" },
     { "id": "35916785932317", "name": "Technical Team (MP)",  "email": "technicalteam@mpascensores.com",  "role": "mailbox" },
