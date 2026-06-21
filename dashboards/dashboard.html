@@ -21,10 +21,17 @@ h1{font-size:18px;font-weight:600;margin-bottom:4px}
 
 /* Tabs */
 .tabs{display:flex;gap:0;border-bottom:1px solid #ddd;margin-bottom:1.5rem;background:#fff;padding:0 1rem;border-radius:8px 8px 0 0;flex-wrap:wrap;overflow-x:auto}
-.tab{padding:10px 14px;cursor:pointer;border:none;background:transparent;color:#666;font-size:12px;border-bottom:2px solid transparent;transition:all .15s;white-space:nowrap;flex-shrink:0}
+.tab{padding:10px 14px;cursor:pointer;border:none;background:transparent;color:#666;font-size:12px;border-bottom:2px solid transparent;transition:all .15s;white-space:nowrap;flex-shrink:0;display:inline-flex;align-items:center;gap:5px}
 .tab.active{color:#111;border-bottom-color:#378ADD;font-weight:500}
 .tab:hover:not(.active){color:#111}
+.tab-mailbox{color:#854F0B}
+.tab-manager{color:#666;font-style:italic}
 .panel{display:none}.panel.active{display:block}
+
+/* Role badges */
+.role-badge{display:inline-block;padding:1px 6px;border-radius:8px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;vertical-align:middle}
+.role-mailbox{background:#FAEEDA;color:#854F0B}
+.role-manager{background:#eee;color:#666}
 
 /* Período */
 .period-sel{display:flex;gap:6px;margin-bottom:1.5rem;flex-wrap:wrap}
@@ -49,6 +56,8 @@ th{text-align:left;padding:9px 10px;border-bottom:1px solid #eee;color:#888;font
 td{padding:9px 10px;border-bottom:1px solid #eee;color:#111;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 tr:last-child td{border-bottom:none}
 tr:hover td{background:#f9f9f9}
+.row-mailbox td{background:#FFFBF3}
+.row-manager td{background:#FAFAFC;color:#888}
 .badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:500}
 .bg{background:#EAF3DE;color:#3B6D11}.bw{background:#FAEEDA;color:#854F0B}.bb{background:#FCEBEB;color:#A32D2D}.bn{background:#eee;color:#666}
 
@@ -77,7 +86,7 @@ tr:hover td{background:#f9f9f9}
 <div class="status-bar">
   <span class="status-dot dot-idle" id="dotStatus"></span>
   <span id="txtStatus">Iniciando...</span>
-  <button onclick="reloadData()">↺ Recargar Zendesk</button>
+  <button onclick="reloadData()">↻ Refrescar datos</button>
 </div>
 
 <div id="app">
@@ -96,24 +105,10 @@ tr:hover td{background:#f9f9f9}
 <script>
 const PROXY = 'https://zendesk-tecnicos-production.up.railway.app';
 
-const TECNICOS = [
-  { id: '18823504352925', name: 'Amine Laaguidi',        email: 'AL@mpascensores.com' },
-  { id: '22511063320093', name: 'Javier Sosa Jimenez',   email: 'jsj@mpascensores.com' },
-  { id: '19330437521693', name: 'Eduardo Robles Gamito', email: 'erg@mpascensores.com' },
-  { id: '19330468060189', name: 'Pedro Calvo Estallo',   email: 'pjce@mplifts.com' },
-  { id: '22510403813533', name: 'Carlos Perez Osuna',    email: 'cpo@mpascensores.com' },
-  { id: '27405062363805', name: 'Raidel Alba',           email: 'rah@mpascensores.com' },
-  { id: '35441820724509', name: 'Michael Prieto',        email: 'mpri@mpascensores.com' },
-  { id: '22829521407261', name: 'Ruud Barten',           email: 'mphollandrb@mplifts.com' },
-  { id: '27939255391261', name: 'Kamal Arrad',           email: 'ka@mplifts.com' },
-  { id: '24252949539869', name: 'Mar Durán',             email: 'md@mpascensores.com' },
-  { id: '25081523536157', name: 'Andreas Scheidl',       email: 'as@mpascensores.com' },
-  { id: '26600613366301', name: 'Alexis Didelot',        email: 'ad@mpascenseurs.com' },
-  { id: '25238078751389', name: 'Nicklas Jonsson',       email: 'nj@mpsweden.se' },
-  { id: '26600564602525', name: 'Antonio Gómez',         email: 'mpcentroag@mpascensores.com' },
-  { id: '34726482176285', name: 'Multimarca',            email: 'multibrand@mplifts.com' },
-  { id: '24254682817949', name: 'Fernando Becerra',      email: 'fbj@mpascensores.com' },
-];
+// La lista de técnicos YA NO está hardcoded. Se carga del servidor desde /api/tecnicos
+// para que tecnicos.json del repo sea la única fuente de verdad. Cualquier alta/baja
+// o cambio de nombre se aplica con un edit del JSON + redeploy, sin tocar este HTML.
+let TECNICOS = [];
 
 function initials(n) { return n.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase(); }
 
@@ -122,7 +117,7 @@ let statsData     = null;
 let charts        = {};
 let pollTimer     = null;
 
-// ── Formato ───────────────────────────────────────────────
+// ── Formato ──────────────────────────────────────────────────────────────────
 function minFmt(min) {
   if (min === null || min === undefined) return '—';
   return min < 60 ? `${Math.round(min)}m` : `${(min/60).toFixed(1)}h`;
@@ -142,8 +137,13 @@ function slaColor(pct, t) {
 function progressBar(pct, t) {
   return `<div class="progress-bar"><div class="progress-fill" style="width:${Math.min(pct||0,100)}%;background:${slaColor(pct,t)}"></div></div>`;
 }
+function roleBadge(role) {
+  if (role === 'mailbox') return ' <span class="role-badge role-mailbox" title="Buzón colectivo">buzón</span>';
+  if (role === 'manager') return ' <span class="role-badge role-manager" title="Manager — no entra en agregados">manager</span>';
+  return '';
+}
 
-// ── Status bar ────────────────────────────────────────────
+// ── Status bar ───────────────────────────────────────────────────────────────
 function setStatus(type, msg) {
   const dot = document.getElementById('dotStatus');
   const txt = document.getElementById('txtStatus');
@@ -151,7 +151,7 @@ function setStatus(type, msg) {
   txt.textContent = msg;
 }
 
-// ── Cards de métricas ─────────────────────────────────────
+// ── Cards de métricas ────────────────────────────────────────────────────────
 function metricCards(m, totalRaw) {
   const excl = totalRaw - m.total;
   return `
@@ -168,14 +168,24 @@ function metricCards(m, totalRaw) {
   </div>`;
 }
 
-// ── Vista general ──────────────────────────────────────────
+// ── Vista general ────────────────────────────────────────────────────────────
 function renderGeneralPanel(period) {
   const d = statsData[period];
   if (!d) return;
-  const g      = d.general;
+  const g = d.general;
+  // Orden de filas: tech primero (por tickets desc), luego mailboxes, manager al final
+  const order = { tech: 0, mailbox: 1, manager: 2 };
   const agents = Object.entries(d.byAgent)
-    .filter(([,m]) => m.total > 0)
-    .sort((a,b) => b[1].total - a[1].total);
+    .filter(([,m]) => m.total > 0 || m.role === 'manager')
+    .sort((a, b) => {
+      const oa = order[a[1].role] ?? 3;
+      const ob = order[b[1].role] ?? 3;
+      if (oa !== ob) return oa - ob;
+      return (b[1].total || 0) - (a[1].total || 0);
+    });
+
+  // Para los gráficos: solo tech y mailbox (no managers)
+  const agentsForCharts = agents.filter(([,m]) => m.role !== 'manager');
 
   document.getElementById('panel-general').innerHTML = `
   ${metricCards(g, d.totalRaw)}
@@ -184,9 +194,10 @@ function renderGeneralPanel(period) {
   <div class="legend">
     <span class="leg-item"><span class="leg-sq" style="background:#378ADD"></span>Tickets válidos</span>
     <span class="leg-item"><span class="leg-sq" style="background:#8B5CF6"></span>Puntos</span>
+    <span class="leg-item" style="margin-left:auto"><span class="role-badge role-mailbox">buzón</span> buzón colectivo, no individual</span>
   </div>
   <div class="card">
-    <div style="position:relative;width:100%;height:${Math.max(260,agents.length*38+80)}px">
+    <div style="position:relative;width:100%;height:${Math.max(260,agentsForCharts.length*38+80)}px">
       <canvas id="chartTickets"></canvas>
     </div>
   </div>
@@ -197,7 +208,7 @@ function renderGeneralPanel(period) {
     <span class="leg-item"><span class="leg-sq" style="background:#BA7517"></span>SLA Tipo 2 % (obj. 75%)</span>
   </div>
   <div class="card">
-    <div style="position:relative;width:100%;height:${Math.max(260,agents.length*38+80)}px">
+    <div style="position:relative;width:100%;height:${Math.max(260,agentsForCharts.length*38+80)}px">
       <canvas id="chartSLA"></canvas>
     </div>
   </div>
@@ -205,17 +216,20 @@ function renderGeneralPanel(period) {
   <div class="section-title">Ranking de técnicos</div>
   <div class="card" style="padding:0;overflow:hidden">
   <table>
-    <colgroup><col style="width:20%"><col style="width:9%"><col style="width:9%"><col style="width:13%"><col style="width:13%"><col style="width:13%"><col style="width:13%"></colgroup>
+    <colgroup><col style="width:24%"><col style="width:9%"><col style="width:9%"><col style="width:13%"><col style="width:13%"><col style="width:13%"><col style="width:13%"></colgroup>
     <thead><tr><th>Técnico</th><th>Tickets</th><th>Puntos</th><th>T. Resp.</th><th>T. Resol.</th><th>SLA 1</th><th>SLA 2</th></tr></thead>
-    <tbody>${agents.map(([name,m])=>`<tr>
-      <td style="font-weight:500">${name}</td>
-      <td>${m.total}</td>
-      <td style="color:#378ADD;font-weight:500">${m.puntos}</td>
-      <td>${minFmt(m.avgFR)}</td>
-      <td>${minFmt(m.avgRes)}</td>
-      <td><span class="badge ${badgeClass(m.sla1,50)}">${m.sla1!==null?m.sla1+'%':'—'}</span></td>
-      <td><span class="badge ${badgeClass(m.sla2,75)}">${m.sla2!==null?m.sla2+'%':'—'}</span></td>
-    </tr>`).join('')}</tbody>
+    <tbody>${agents.map(([name,m])=>{
+      const rowCls = m.role === 'mailbox' ? 'row-mailbox' : m.role === 'manager' ? 'row-manager' : '';
+      return `<tr class="${rowCls}">
+        <td style="font-weight:500">${name}${roleBadge(m.role)}</td>
+        <td>${m.total}</td>
+        <td style="color:#378ADD;font-weight:500">${m.puntos}</td>
+        <td>${minFmt(m.avgFR)}</td>
+        <td>${minFmt(m.avgRes)}</td>
+        <td><span class="badge ${badgeClass(m.sla1,50)}">${m.sla1!==null?m.sla1+'%':'—'}</span></td>
+        <td><span class="badge ${badgeClass(m.sla2,75)}">${m.sla2!==null?m.sla2+'%':'—'}</span></td>
+      </tr>`;
+    }).join('')}</tbody>
   </table>
   </div>`;
 
@@ -227,10 +241,10 @@ function renderGeneralPanel(period) {
     charts.tickets = new Chart(ctxT, {
       type: 'bar',
       data: {
-        labels: agents.map(([n])=>n),
+        labels: agentsForCharts.map(([n,m])=> m.role === 'mailbox' ? n + ' (buzón)' : n),
         datasets: [
-          { label:'Tickets', data:agents.map(([,m])=>m.total), backgroundColor:'#378ADD' },
-          { label:'Puntos',  data:agents.map(([,m])=>m.puntos), backgroundColor:'#8B5CF6' }
+          { label:'Tickets', data:agentsForCharts.map(([,m])=>m.total), backgroundColor:'#378ADD' },
+          { label:'Puntos',  data:agentsForCharts.map(([,m])=>m.puntos), backgroundColor:'#8B5CF6' }
         ]
       },
       options: {
@@ -246,10 +260,10 @@ function renderGeneralPanel(period) {
     charts.sla = new Chart(ctxS, {
       type: 'bar',
       data: {
-        labels: agents.map(([n])=>n),
+        labels: agentsForCharts.map(([n,m])=> m.role === 'mailbox' ? n + ' (buzón)' : n),
         datasets: [
-          { label:'SLA 1 %', data:agents.map(([,m])=>m.sla1), backgroundColor:'#1D9E75CC' },
-          { label:'SLA 2 %', data:agents.map(([,m])=>m.sla2), backgroundColor:'#BA7517CC' }
+          { label:'SLA 1 %', data:agentsForCharts.map(([,m])=>m.sla1), backgroundColor:'#1D9E75CC' },
+          { label:'SLA 2 %', data:agentsForCharts.map(([,m])=>m.sla2), backgroundColor:'#BA7517CC' }
         ]
       },
       options: {
@@ -264,11 +278,11 @@ function renderGeneralPanel(period) {
   }
 }
 
-// ── Vista técnico individual ────────────────────────────────
+// ── Vista técnico individual ─────────────────────────────────────────────────
 function renderTechPanel(tecnico, period) {
   const d = statsData[period];
   if (!d) return;
-  const m = d.byAgent[tecnico.name] || { total:0, resolved:0, puntos:0 };
+  const m = d.byAgent[tecnico.name] || { total:0, resolved:0, puntos:0, role: tecnico.role };
   const tickets = (d.techTickets && d.techTickets[tecnico.id]) ? d.techTickets[tecnico.id] : [];
 
   const periods = ['last_week','current_month','last_month','year'];
@@ -281,7 +295,7 @@ function renderTechPanel(tecnico, period) {
   panel.innerHTML = `
   <div class="tech-header">
     <div class="avatar">${initials(tecnico.name)}</div>
-    <div><div class="tech-name">${tecnico.name}</div><div class="tech-email">${tecnico.email}</div></div>
+    <div><div class="tech-name">${tecnico.name}${roleBadge(tecnico.role)}</div><div class="tech-email">${tecnico.email}</div></div>
   </div>
   ${metricCards(m, m.total)}
 
@@ -346,19 +360,47 @@ function renderTechPanel(tecnico, period) {
   }
 }
 
-// ── Construcción de UI ─────────────────────────────────────
+// ── Cargar la lista de técnicos del servidor ─────────────────────────────────
+async function loadTecnicos() {
+  try {
+    const r = await fetch(`${PROXY}/api/tecnicos?_=${Date.now()}`, { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    TECNICOS = d.tecnicos || [];
+    console.log('Equipo cargado:', TECNICOS.length, 'entradas');
+  } catch (e) {
+    console.error('No se pudo cargar /api/tecnicos:', e.message);
+    setStatus('error', 'No se puede cargar la lista de técnicos: ' + e.message);
+    throw e;
+  }
+}
+
+// ── Construcción de UI ───────────────────────────────────────────────────────
 function buildUI() {
   const tabBar = document.getElementById('tabBar');
   const panels = document.getElementById('panels');
 
+  // Limpiar pestañas existentes salvo la "general"
+  Array.from(tabBar.querySelectorAll('.tab')).forEach(t => {
+    if (t.dataset.tab !== 'general') t.remove();
+  });
+
   panels.innerHTML = '<div id="panel-general" class="panel active"><div class="loading">Cargando...</div></div>';
 
-  TECNICOS.forEach(t => {
+  // Orden de pestañas: tech (por nombre) → mailbox → manager
+  const orderR = { tech: 0, mailbox: 1, manager: 2 };
+  const sorted = [...TECNICOS].sort((a, b) => {
+    const oa = orderR[a.role] ?? 3, ob = orderR[b.role] ?? 3;
+    if (oa !== ob) return oa - ob;
+    return a.name.localeCompare(b.name);
+  });
+
+  sorted.forEach(t => {
     const btn = document.createElement('button');
-    btn.className    = 'tab';
+    btn.className = 'tab' + (t.role === 'mailbox' ? ' tab-mailbox' : t.role === 'manager' ? ' tab-manager' : '');
     btn.dataset.tab  = `tech-${t.id}`;
     btn.textContent  = t.name.split(' ')[0];
-    btn.title        = t.name;
+    btn.title        = t.name + (t.role === 'mailbox' ? ' (buzón)' : t.role === 'manager' ? ' (manager)' : '');
     tabBar.appendChild(btn);
 
     const div = document.createElement('div');
@@ -402,9 +444,9 @@ function buildUI() {
   });
 }
 
-// ── Carga de datos con polling ─────────────────────────────
+// ── Carga de datos con polling ───────────────────────────────────────────────
 async function fetchStats() {
-  const r = await fetch(`${PROXY}/api/stats?t=${Date.now()}`);
+  const r = await fetch(`${PROXY}/api/stats?t=${Date.now()}`, { cache: 'no-store' });
   if (r.status === 202) {
     const d = await r.json();
     setStatus('loading', `Cargando... ${d.stage || ''} ${d.partial ? '('+d.partial+' tickets)' : ''}`);
@@ -429,20 +471,23 @@ async function pollUntilReady() {
         renderGeneralPanel(currentPeriod);
       }
     } catch(e) {
-      setStatus('error', `Error: ${e.message} — ¿Está activo el servidor? (node server.js)`);
+      setStatus('error', `Error: ${e.message}`);
     }
   };
 
   await attempt();
   if (!statsData) {
-    pollTimer = setInterval(attempt, 15000); // reintenta cada 15s mientras carga
+    pollTimer = setInterval(attempt, 15000);
   }
 }
 
+// Recarga incremental: usa /api/refresh, NO /api/reload (este último borra el
+// checkpoint y dispara 15+ minutos de descarga total). El refresh incremental
+// aprovecha el cursor y termina en segundos si no hay tickets nuevos.
 async function reloadData() {
   try {
-    setStatus('loading', 'Solicitando recarga...');
-    await fetch(`${PROXY}/api/reload`);
+    setStatus('loading', 'Solicitando recarga incremental...');
+    await fetch(`${PROXY}/api/refresh`, { cache: 'no-store' });
     statsData = null;
     document.getElementById('panel-general').innerHTML = '<div class="loading">Recargando datos de Zendesk...</div>';
     await new Promise(res => setTimeout(res, 2000));
@@ -452,8 +497,17 @@ async function reloadData() {
   }
 }
 
-buildUI();
-pollUntilReady();
+// Arranque: primero carga la lista de técnicos, luego construye UI y arranca el poll.
+(async function init() {
+  try {
+    await loadTecnicos();
+    buildUI();
+    pollUntilReady();
+  } catch (e) {
+    // Si loadTecnicos falla, el status ya muestra el error
+    console.error('Init falló:', e);
+  }
+})();
 </script>
 </body>
 </html>
