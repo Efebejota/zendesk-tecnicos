@@ -161,17 +161,24 @@ async function fetchAll(startUrl) {
 
 async function fetchIncremental() {
   const cp = loadCheckpoint();
-  // Checkpoint v2: NO trae tickets, solo afterUrl. Arrancamos siempre con items=[]
-  // y dejamos que el cursor continúe donde lo dejó. La caché en memoria se
-  // reconstruye, pero el cursor evita reescanear desde el inicio.
-  let items = [];
+  // Estado actual del caché en memoria. Si está vacío (arranque en frío), NO
+  // sirve usar el cursor del checkpoint: solo traería los nuevos desde ese punto
+  // y perderíamos todo el histórico. El cursor solo es útil si ya tenemos un
+  // caché poblado al que añadir tickets nuevos (refresh en caliente).
+  const haveCacheInMemory = cache.tickets && cache.tickets.length > 100;
+  let items = haveCacheInMemory ? [...cache.tickets] : [];
   let startUrl;
-  if (cp && cp.afterUrl) {
-    console.log(`Reanudando desde checkpoint v2 (cursor): savedAt=${cp.savedAt}`);
+  if (cp && cp.afterUrl && haveCacheInMemory) {
+    console.log(`Refresh incremental: ${items.length} tickets en memoria + cursor del checkpoint (savedAt=${cp.savedAt})`);
     startUrl = cp.afterUrl;
   } else {
-    console.log('Primera carga completa desde el inicio...');
+    if (cp && cp.afterUrl) {
+      console.log(`Caché en memoria vacío (${cache.tickets?.length || 0} tickets). Aunque hay cursor en checkpoint, se ignora y se hace carga completa para rehidratar histórico.`);
+    } else {
+      console.log('Primera carga completa desde el inicio...');
+    }
     startUrl = BASE + '/incremental/tickets/cursor.json?start_time=0&per_page=100';
+    items = []; // arrancar de cero
   }
   let url = startUrl, page = 0, lastAfterUrl = cp?.afterUrl || null;
   while (url) {
