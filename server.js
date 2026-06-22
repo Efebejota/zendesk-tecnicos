@@ -167,6 +167,11 @@ async function fetchIncremental() {
   // caché poblado al que añadir tickets nuevos (refresh en caliente).
   const haveCacheInMemory = cache.tickets && cache.tickets.length > 100;
   let items = haveCacheInMemory ? [...cache.tickets] : [];
+  // metric_sets sideloaded en la misma petición (cobertura 100% incluso para
+  // tickets archivados, que /ticket_metrics.json excluía). Se acumulan en
+  // un array paralelo y los devolvemos junto con los tickets.
+  const haveMetricsInMemory = cache.metrics && cache.metrics.length > 100;
+  let metrics = haveMetricsInMemory ? [...cache.metrics] : [];
   let startUrl;
   if (cp && cp.afterUrl && haveCacheInMemory) {
     console.log(`Refresh incremental: ${items.length} tickets en memoria + cursor del checkpoint (savedAt=${cp.savedAt})`);
@@ -177,14 +182,17 @@ async function fetchIncremental() {
     } else {
       console.log('Primera carga completa desde el inicio...');
     }
-    startUrl = BASE + '/incremental/tickets/cursor.json?start_time=0&per_page=100';
-    items = []; // arrancar de cero
+    // include=metric_sets devuelve los metric_set sideloaded (Zendesk lo pasa
+    // junto al ticket en data.metric_sets) — cobertura 100% incluso para
+    // tickets archivados de hace meses.
+    startUrl = BASE + '/incremental/tickets/cursor.json?start_time=0&per_page=100&include=metric_sets';
+    items = []; metrics = []; // arrancar de cero
   }
   let url = startUrl, page = 0, lastAfterUrl = cp?.afterUrl || null;
   while (url) {
     page++;
     if (page % 10 === 0) {
-      console.log(`  Tickets: página ${page} (${items.length} total)...`);
+      console.log(`  Tickets: página ${page} (${items.length} tickets, ${metrics.length} métricas)...`);
       // Checkpoint intermedio cada 10 páginas (~1000 tickets) — ahora es muy
       // barato porque solo guardamos afterUrl. Así si Railway nos mata, al
       // volver retomamos donde íbamos.
@@ -203,12 +211,22 @@ async function fetchIncremental() {
       items = items.concat(data.tickets);
       cache.ticketsPartial = items.filter(canon.isValidTicket).length;
     }
+    // Zendesk sideloads metric_sets en data.metric_sets cuando se usa include=metric_sets.
+    // Solo viene si la API soporta sideload en este endpoint (lo soporta).
+    if (Array.isArray(data.metric_sets)) {
+      metrics = metrics.concat(data.metric_sets);
+    }
     lastAfterUrl = data.after_url || null;
+    // Asegurarnos de que el after_url conserva el include=metric_sets. Si Zendesk no
+    // lo añadiera automáticamente, lo forzamos.
+    if (lastAfterUrl && !lastAfterUrl.includes('include=metric_sets')) {
+      lastAfterUrl += (lastAfterUrl.includes('?') ? '&' : '?') + 'include=metric_sets';
+    }
     if (data.end_of_stream === true) { saveCheckpoint(items, lastAfterUrl); url = null; }
     else { url = lastAfterUrl; }
     if (url) await new Promise(res => setTimeout(res, 300));
   }
-  return items;
+  return { tickets: items, metrics };
 }
 
 // ── /api/stats (dashboard de Técnicos) — usa canon ──────────────────────────
@@ -334,14 +352,11 @@ async function loadInBackground(force = false) {
   cache.loading = true; cache.loadingStage = 'tickets'; cache.lastError = null;
   console.log('\n=== Iniciando carga ===');
   try {
-    console.log('Cargando tickets...');
-    const allTickets = await fetchIncremental();
+    console.log('Cargando tickets + métricas (sideload include=metric_sets)...');
+    const { tickets: allTickets, metrics: allMetrics } = await fetchIncremental();
     cache.tickets = allTickets.filter(canon.isValidTicket);
-    console.log(`Tickets válidos: ${cache.tickets.length}`);
-    cache.loadingStage = 'metrics';
-    console.log('Cargando métricas...');
-    cache.metrics = await fetchAll(BASE + '/ticket_metrics.json?per_page=100');
-    console.log(`Métricas: ${cache.metrics.length}`);
+    cache.metrics = allMetrics;
+    console.log(`Tickets válidos: ${cache.tickets.length} · Métricas sideload: ${cache.metrics.length}`);
     cache.loadingStage = 'orgs';
     console.log('Cargando organizaciones...');
     try {
