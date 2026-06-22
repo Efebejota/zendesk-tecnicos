@@ -38,10 +38,10 @@ h1{font-size:22px;font-weight:700;color:#1a1a2e;margin-bottom:6px;text-align:cen
 <p class="sub">Selecciona el dashboard que quieres consultar</p>
 
 <div class="grid">
-  <a class="card" href="/kpi.html">
+  <a class="card" href="/kpi-v2.html">
     <div class="card-icon">📊</div>
     <div class="card-title">KPI Dashboard</div>
-    <div class="card-desc">Tickets, tiempos, SLAs, canales, clientes y datos de dirección. Vista mensual y acumulada.</div>
+    <div class="card-desc">Tickets, tiempos, SLAs, comparativas y panel Dirección. Vista mensual, semanal y acumulada.</div>
     <div class="card-badge badge-green">Vista global</div>
   </a>
   <a class="card" href="/dashboard.html">
@@ -72,7 +72,7 @@ h1{font-size:22px;font-weight:700;color:#1a1a2e;margin-bottom:6px;text-align:cen
 <script>
 async function checkHealth() {
   try {
-    const r = await fetch('/health');
+    const r = await fetch('/health', { cache: 'no-store' });
     const d = await r.json();
     const dot = document.getElementById('dot');
     const txt = document.getElementById('stxt');
@@ -80,22 +80,25 @@ async function checkHealth() {
     const bar = document.getElementById('progressBar');
     const lbl = document.getElementById('pctLabel');
 
-    if (d.loadingStage === 'done') {
+    if (d.loadingStage === 'done' && d.statsReady) {
       dot.className = 'dot ok';
-      txt.textContent = 'Servidor activo · ' + d.cachedTickets.toLocaleString() + ' tickets cargados';
+      txt.textContent = 'Servidor activo · ' + (d.cachedTickets || 0).toLocaleString() + ' tickets cargados';
       wrap.style.display = 'none';
       lbl.textContent = '';
     } else {
       dot.className = 'dot loading';
-      const total = d.checkpoint && d.checkpoint.tickets ? d.checkpoint.tickets : 0;
+      // Compatibilidad checkpoint v2: el campo ahora se llama ticketsSeen (no tickets).
+      // Conservamos el fallback al campo viejo por si en algún momento el formato vuelve.
+      const total = (d.checkpoint && (d.checkpoint.ticketsSeen || d.checkpoint.tickets)) || 0;
       const partial = d.ticketsPartial || 0;
-      if (total > 0) {
+      if (total > 0 && partial > 0) {
         const pct = Math.min(Math.round(partial / total * 100), 99);
         wrap.style.display = 'block';
         bar.style.width = pct + '%';
         lbl.textContent = pct + '%';
         txt.textContent = 'Cargando... (' + partial.toLocaleString() + ' / ' + total.toLocaleString() + ')';
       } else {
+        wrap.style.display = 'none';
         txt.textContent = 'Cargando datos... (' + partial.toLocaleString() + ' tickets)';
       }
       setTimeout(checkHealth, 5000);
