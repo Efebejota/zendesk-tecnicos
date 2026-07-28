@@ -331,12 +331,33 @@ function computeKpiPanel(period) {
     }
   }
 
+  // Acumulado exacto YTD a cierre del mes anterior (solo aplica a last_month):
+  // desde el 1 de enero hasta el mismo "hasta" que ya tiene el período last_month.
+  // Reutiliza computeRange (mismo cálculo canónico, a nivel de ticket) para que
+  // sla1/sla2/avgFR1 sean exactos, no una media de medias mensuales.
+  let ytdToLastClosedMonth = null;
+  if (period === 'last_month') {
+    const yearStart = new Date(end.getFullYear(), 0, 1, 0, 0, 0, 0);
+    const ytdRange = computeRange(yearStart, end, metricsById);
+    ytdToLastClosedMonth = {
+      desde: ytdRange.desde,
+      hasta: ytdRange.hasta,
+      sla1: ytdRange.general.sla1,
+      sla2: ytdRange.general.sla2,
+      slaMedia: combineSLA(ytdRange.general),
+      avgFR1: ytdRange.general.avgFR1,
+      sla1Den: ytdRange.general.sla1Den,
+      sla2Den: ytdRange.general.sla2Den,
+    };
+  }
+
   return {
     period,
     current: { ...current, label: period },
     previous,
     yoy,
     monthlyEvo,
+    ytdToLastClosedMonth,
   };
 }
 

@@ -314,6 +314,21 @@ function ppCell(cur, prev) {
   const cls = d > 0 ? 'green' : (d === 0 ? 'gray' : 'red');
   return `<span class="${cls}">${arrow} ${Math.abs(d).toFixed(1)}pp</span>`;
 }
+// Combina SLA T1+T2 ponderado por número de tickets (denominadores), igual que el backend.
+function combineSLA(g) {
+  const d1 = g?.sla1Den || 0, d2 = g?.sla2Den || 0;
+  if (d1 + d2 === 0) return null;
+  const cumple1 = g.sla1 != null ? Math.round(g.sla1 * d1 / 100) : 0;
+  const cumple2 = g.sla2 != null ? Math.round(g.sla2 * d2 / 100) : 0;
+  return Math.round((cumple1 + cumple2) / (d1 + d2) * 100);
+}
+// "% conseguido" = valor acumulado vs objetivo. inverse=true para métricas donde bajar es mejor (tiempos).
+function pctObjetivoCell(valor, objetivo, inverse = false) {
+  if (valor == null || !objetivo) return '<span class="gray">—</span>';
+  const pct = inverse ? (objetivo / valor * 100) : (valor / objetivo * 100);
+  const cls = pct >= 100 ? 'green' : 'red';
+  return `<span class="${cls}">${pct.toFixed(0)}%</span>`;
+}
 
 function renderRanking(statsData, period) {
   // Mapeo period KPI → period stats (mismas claves, viene bien)
@@ -737,6 +752,13 @@ function render(d, statsData) {
   const pctResol = g.total > 0 ? (g.resolved / g.total * 100).toFixed(1) : '—';
   const sla1Cls = g.sla1 != null && g.sla1 >= 50 ? 'green' : 'red';
   const sla2Cls = g.sla2 != null && g.sla2 >= 75 ? 'green' : 'red';
+  const slaMediaCur  = combineSLA(g);
+  const slaMediaPrev = prev ? combineSLA(prev.general) : null;
+  const slaMediaYoy  = yoy  ? combineSLA(yoy.general)  : null;
+  const slaMediaCls  = slaMediaCur != null && slaMediaCur >= 62.5 ? 'green' : 'red';
+  // Acumulado año a cierre del mes anterior (exacto, calculado en backend) — solo en "Último Mes Cerrado".
+  const ytd = d.period === 'last_month' ? (d.ytdToLastClosedMonth || null) : null;
+  const OBJ_SLA1 = 50, OBJ_SLA2 = 75, OBJ_SLA_MEDIA = 62.5, OBJ_FR1 = 15;
 
   let html = `
     <div class="info-bar canon">
@@ -786,6 +808,7 @@ function render(d, statsData) {
             <th class="right">Actual</th>
             ${prev ? `<th class="right">${prev.label}<br><small style="color:#8899bb;font-weight:400">(${prev.desde} → ${prev.hasta})</small></th><th class="right">Δ %</th>` : ''}
             ${yoy ? `<th class="right">${yoy.label}<br><small style="color:#8899bb;font-weight:400">(${yoy.desde} → ${yoy.hasta})</small></th><th class="right">Δ %</th>` : ''}
+            ${ytd ? `<th class="right" style="background:#fbf8ff">Valor acumulado año<br><small style="color:#8899bb;font-weight:400">(${ytd.desde} → ${ytd.hasta})</small></th><th class="right" style="background:#fbf8ff">% conseguido</th>` : ''}
           </tr>
         </thead>
         <tbody>
@@ -794,47 +817,62 @@ function render(d, statsData) {
             <td class="right blue">${g.total}</td>
             ${prev ? `<td class="right">${prev.general.total}</td><td class="right">${variationCell(g.total, prev.general.total)}</td>` : ''}
             ${yoy  ? `<td class="right">${yoy.general.total}</td><td class="right">${variationCell(g.total, yoy.general.total)}</td>`  : ''}
+            ${ytd ? `<td class="right gray">—</td><td class="right gray">—</td>` : ''}
           </tr>
           <tr>
             <td><strong>Resueltos</strong></td>
             <td class="right">${g.resolved}</td>
             ${prev ? `<td class="right">${prev.general.resolved}</td><td class="right">${variationCell(g.resolved, prev.general.resolved)}</td>` : ''}
             ${yoy  ? `<td class="right">${yoy.general.resolved}</td><td class="right">${variationCell(g.resolved, yoy.general.resolved)}</td>`  : ''}
+            ${ytd ? `<td class="right gray">—</td><td class="right gray">—</td>` : ''}
           </tr>
           <tr>
             <td><strong>Puntos</strong></td>
             <td class="right purple">${g.puntos}</td>
             ${prev ? `<td class="right">${prev.general.puntos}</td><td class="right">${variationCell(g.puntos, prev.general.puntos)}</td>` : ''}
             ${yoy  ? `<td class="right">${yoy.general.puntos}</td><td class="right">${variationCell(g.puntos, yoy.general.puntos)}</td>`  : ''}
+            ${ytd ? `<td class="right gray">—</td><td class="right gray">—</td>` : ''}
           </tr>
           <tr>
             <td><strong>SLA Tipo 1</strong></td>
             <td class="right ${sla1Cls}">${g.sla1 != null ? g.sla1 + '%' : '—'}</td>
             ${prev ? `<td class="right">${prev.general.sla1 != null ? prev.general.sla1 + '%' : '—'}</td><td class="right">${ppCell(g.sla1, prev.general.sla1)}</td>` : ''}
             ${yoy  ? `<td class="right">${yoy.general.sla1 != null ? yoy.general.sla1 + '%' : '—'}</td><td class="right">${ppCell(g.sla1, yoy.general.sla1)}</td>`   : ''}
+            ${ytd ? `<td class="right">${ytd.sla1 != null ? ytd.sla1 + '%' : '—'}</td><td class="right">${pctObjetivoCell(ytd.sla1, OBJ_SLA1)}</td>` : ''}
           </tr>
           <tr>
             <td><strong>SLA Tipo 2</strong></td>
             <td class="right ${sla2Cls}">${g.sla2 != null ? g.sla2 + '%' : '—'}</td>
             ${prev ? `<td class="right">${prev.general.sla2 != null ? prev.general.sla2 + '%' : '—'}</td><td class="right">${ppCell(g.sla2, prev.general.sla2)}</td>` : ''}
             ${yoy  ? `<td class="right">${yoy.general.sla2 != null ? yoy.general.sla2 + '%' : '—'}</td><td class="right">${ppCell(g.sla2, yoy.general.sla2)}</td>`   : ''}
+            ${ytd ? `<td class="right">${ytd.sla2 != null ? ytd.sla2 + '%' : '—'}</td><td class="right">${pctObjetivoCell(ytd.sla2, OBJ_SLA2)}</td>` : ''}
+          </tr>
+          <tr>
+            <td><strong>SLA Media (T1+T2 ponderada)</strong></td>
+            <td class="right ${slaMediaCls}">${slaMediaCur != null ? slaMediaCur + '%' : '—'}</td>
+            ${prev ? `<td class="right">${slaMediaPrev != null ? slaMediaPrev + '%' : '—'}</td><td class="right">${ppCell(slaMediaCur, slaMediaPrev)}</td>` : ''}
+            ${yoy  ? `<td class="right">${slaMediaYoy != null ? slaMediaYoy + '%' : '—'}</td><td class="right">${ppCell(slaMediaCur, slaMediaYoy)}</td>`   : ''}
+            ${ytd ? `<td class="right">${ytd.slaMedia != null ? ytd.slaMedia + '%' : '—'}</td><td class="right">${pctObjetivoCell(ytd.slaMedia, OBJ_SLA_MEDIA)}</td>` : ''}
           </tr>
           <tr>
             <td><strong>T. medio 1ª resp. T1 (min lab.)</strong></td>
             <td class="right">${g.avgFR1 ?? '—'}</td>
             ${prev ? `<td class="right">${prev.general.avgFR1 ?? '—'}</td><td class="right">${variationCell(g.avgFR1, prev.general.avgFR1, {inverse:true})}</td>` : ''}
             ${yoy  ? `<td class="right">${yoy.general.avgFR1 ?? '—'}</td><td class="right">${variationCell(g.avgFR1, yoy.general.avgFR1, {inverse:true})}</td>`   : ''}
+            ${ytd ? `<td class="right">${ytd.avgFR1 ?? '—'}</td><td class="right">${pctObjetivoCell(ytd.avgFR1, OBJ_FR1, true)}</td>` : ''}
           </tr>
           <tr>
             <td><strong>T. medio 1ª resp. T2 (min lab.)</strong></td>
             <td class="right">${g.avgFR2 ?? '—'}</td>
             ${prev ? `<td class="right">${prev.general.avgFR2 ?? '—'}</td><td class="right">${variationCell(g.avgFR2, prev.general.avgFR2, {inverse:true})}</td>` : ''}
             ${yoy  ? `<td class="right">${yoy.general.avgFR2 ?? '—'}</td><td class="right">${variationCell(g.avgFR2, yoy.general.avgFR2, {inverse:true})}</td>`   : ''}
+            ${ytd ? `<td class="right gray">—</td><td class="right gray">—</td>` : ''}
           </tr>
         </tbody>
       </table>
       <div style="font-size:10px;color:#8899bb;margin-top:8px;line-height:1.5">
         Verde = mejora (más volumen/resueltos, mejor SLA, menos tiempo) · Rojo = empeora · Tiempos: bajada es mejor (más rápido)
+        ${ytd ? '<br>"Valor acumulado año" = desde el 1 de enero hasta el cierre del mes anterior (exacto). "% conseguido" = valor acumulado vs objetivo (SLA1 50%, SLA2 75%, Media 62.5%, T. resp. T1 15 min).' : ''}
       </div>
     </div>`;
   }
