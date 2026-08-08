@@ -12,6 +12,10 @@
  *    del dashboard de Técnicos como referencia personal
  *  - Mailboxes (Multimarca, Technical Team) suman en agregados y aparecen
  *    en ranking marcados con role='mailbox' (el cliente puede pintarlos aparte)
+ *  - NUEVO: /api/stats/range — igual que /api/stats pero para un rango de
+ *    fechas arbitrario (from/to), no solo los períodos fijos. Pensado para
+ *    acumular objetivos desde el inicio de un semestre (p.ej. 2026-07-01)
+ *    hasta hoy sin perder meses intermedios. Reutiliza el mismo canon.js.
  * Heredado de v4:
  *  - ETags off + Cache-Control: no-store en datos, no-cache en HTML
  *  - Auto-refresh del caché (6h) y auto-scan de llamadas (6h)
@@ -19,19 +23,16 @@
  *
  * Puerto: 3001 (local) | process.env.PORT (Railway)
  */
-
 const express = require('express');
 const cors    = require('cors');
 const fetch   = require('node-fetch');
 const path    = require('path');
 const fs      = require('fs');
 const canon   = require('./canon');
-
 const app = express();
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 app.set('etag', false);
-
 const DATA_PATHS = new Set(['/tickets', '/metrics', '/all', '/refresh', '/health']);
 app.use((req, res, next) => {
   if (req.path.startsWith('/api') || DATA_PATHS.has(req.path)) {
@@ -41,7 +42,6 @@ app.use((req, res, next) => {
   }
   next();
 });
-
 // ── Credenciales ─────────────────────────────────────────────────────────────
 const SUBDOMAIN = process.env.ZD_SUBDOMAIN || process.env.ZDOMAIN || 'mpascensoresatc';
 const EMAIL     = process.env.ZD_EMAIL     || process.env.ZEMAIL  || 'fbj@mpascensores.com';
@@ -49,12 +49,10 @@ const TOKEN     = process.env.ZD_TOKEN     || process.env.ZTOKEN  || '3LpjcUPFnB
 const AUTH      = Buffer.from(EMAIL + '/token:' + TOKEN).toString('base64');
 const BASE      = `https://${SUBDOMAIN}.zendesk.com/api/v2`;
 const HEADERS   = { Authorization: 'Basic ' + AUTH, 'Content-Type': 'application/json' };
-
 // ── Persistencia ─────────────────────────────────────────────────────────────
 const DATA_DIR        = process.env.DATA_DIR || __dirname;
 const LLAMADAS_FILE   = path.join(DATA_DIR, 'llamadas.json');
 const CHECKPOINT_FILE = path.join(DATA_DIR, 'checkpoint.json');
-
 function seedFromRepo(targetFile, name) {
   if (DATA_DIR === __dirname) return;
   const seed = path.join(__dirname, name);
@@ -65,7 +63,6 @@ function seedFromRepo(targetFile, name) {
 }
 seedFromRepo(LLAMADAS_FILE, 'llamadas.json');
 seedFromRepo(CHECKPOINT_FILE, 'checkpoint.json');
-
 // ── Equipo TAT (tecnicos.json) ───────────────────────────────────────────────
 let TECNICOS = canon.loadTecnicos(DATA_DIR);
 let TEAM     = canon.buildTeamSets(TECNICOS);
@@ -77,14 +74,12 @@ function reloadTecnicos() {
     return true;
   } catch (e) { console.warn('No se pudo recargar tecnicos.json:', e.message); return false; }
 }
-
 // ── Checkpoint y llamadas ────────────────────────────────────────────────────
 // CHECKPOINT v2: solo guarda cursor (afterUrl) + savedAt. NO guarda los tickets,
 // que en el formato anterior podían crecer a 150+ MB y provocar OOM al arrancar.
 // Si encontramos un checkpoint v1 (con tickets dentro), lo ignoramos y arrancamos
 // de cero. La carga incremental posterior reconstruye el caché en memoria.
 const CHECKPOINT_MAX_BYTES = 5 * 1024 * 1024; // 5 MB de margen para v2
-
 function loadCheckpoint() {
   if (!fs.existsSync(CHECKPOINT_FILE)) return null;
   try {
@@ -103,7 +98,6 @@ function loadCheckpoint() {
     return cp;
   } catch (e) { console.warn('checkpoint.json no legible:', e.message); return null; }
 }
-
 function saveCheckpoint(tickets, afterUrl) {
   // tickets se pasa por compatibilidad de firma; ya NO se persiste (ver arriba).
   try {
@@ -112,23 +106,18 @@ function saveCheckpoint(tickets, afterUrl) {
     console.log(`Checkpoint guardado (ligero): afterUrl=${!!afterUrl}, ticketsSeen=${cp.ticketsSeen}`);
   } catch (e) { console.warn('No se pudo guardar checkpoint:', e.message); }
 }
-
 function loadLlamadas() {
   if (!fs.existsSync(LLAMADAS_FILE)) return { tickets: {}, meta: {} };
   try { return JSON.parse(fs.readFileSync(LLAMADAS_FILE, 'utf8')); }
   catch (e) { console.warn('llamadas.json no legible:', e.message); return { tickets: {}, meta: {} }; }
 }
-
 let llamadasCache = loadLlamadas();
 console.log(`llamadas.json cargado: ${Object.keys(llamadasCache.tickets).length} entradas`);
-
 function saveLlamadas() {
   try { fs.writeFileSync(LLAMADAS_FILE, JSON.stringify(llamadasCache, null, 2)); }
   catch (e) { console.warn('No se pudo guardar llamadas.json:', e.message); }
 }
-
 function tieneLlamada(ticketId) { return llamadasCache.tickets[String(ticketId)] === true; }
-
 // ── Caché ────────────────────────────────────────────────────────────────────
 const CACHE_TTL = 6 * 60 * 60 * 1000;
 let cache = {
@@ -136,7 +125,6 @@ let cache = {
   loadedAt: null, loading: false, loadingStage: 'idle',
   ticketsPartial: 0, lastError: null, stats: null,
 };
-
 // ── Fetch ────────────────────────────────────────────────────────────────────
 async function fetchAll(startUrl) {
   let items = [];
@@ -158,7 +146,6 @@ async function fetchAll(startUrl) {
   }
   return items;
 }
-
 async function fetchIncremental() {
   const cp = loadCheckpoint();
   // Estado actual del caché en memoria. Si está vacío (arranque en frío), NO
@@ -228,7 +215,6 @@ async function fetchIncremental() {
   }
   return { tickets: items, metrics };
 }
-
 // ── /api/stats (dashboard de Técnicos) — usa canon ──────────────────────────
 function computeStats() {
   const metricsById = {};
@@ -263,7 +249,6 @@ function computeStats() {
   }
   return result;
 }
-
 // ── /api/kpi (NUEVO) ─────────────────────────────────────────────────────────
 // Helper interno: calcula KPIs canónicos para un rango arbitrario [start, end]
 function computeRange(start, end, metricsById) {
@@ -292,19 +277,16 @@ function computeRange(start, end, metricsById) {
     },
   };
 }
-
 function computeKpiPanel(period) {
   const metricsById = {};
   cache.metrics.forEach(m => { metricsById[m.ticket_id] = m; });
   const { start, end } = canon.getDateRange(period);
   const current = computeRange(start, end, metricsById);
-
   // Comparativas
   const prevRange = canon.getPreviousRange(period);
   const yoyRange  = canon.getSamePeriodLastYear(period);
   const previous  = prevRange ? { ...computeRange(prevRange.start, prevRange.end, metricsById), label: prevRange.label } : null;
   const yoy       = yoyRange  ? { ...computeRange(yoyRange.start,  yoyRange.end,  metricsById), label: yoyRange.label  } : null;
-
   // Evolución mensual del año actual (para gráfico). Solo si period ∈ {current_month, last_month, year}.
   let monthlyEvo = null;
   if (['current_month', 'last_month', 'year'].includes(period)) {
@@ -330,7 +312,6 @@ function computeKpiPanel(period) {
       });
     }
   }
-
   // Acumulado exacto YTD a cierre del mes anterior (solo aplica a last_month):
   // desde el 1 de enero hasta el mismo "hasta" que ya tiene el período last_month.
   // Reutiliza computeRange (mismo cálculo canónico, a nivel de ticket) para que
@@ -350,7 +331,6 @@ function computeKpiPanel(period) {
       sla2Den: ytdRange.general.sla2Den,
     };
   }
-
   return {
     period,
     current: { ...current, label: period },
@@ -360,7 +340,38 @@ function computeKpiPanel(period) {
     ytdToLastClosedMonth,
   };
 }
+// ── /api/stats/range (NUEVO) ─────────────────────────────────────────────────
+// Igual que /api/stats pero para un rango de fechas arbitrario (from/to), no solo
+// los períodos fijos (semana/mes/año). Pensado para acumular objetivos desde el
+// inicio de un semestre (p.ej. from=2026-07-01) hasta hoy sin perder meses
+// intermedios. Reutiliza el mismo canon.js: mismo universo, misma validación,
+// mismo desglose por técnico que /api/stats. (Nombrada distinto de la función
+// computeRange de arriba para no chocar con ella: esa devuelve un agregado del
+// equipo entero, esta desglosa por técnico como /api/stats.)
+function computeRangeStats(start, end) {
+  const metricsById = {};
+  cache.metrics.forEach(m => { metricsById[m.ticket_id] = m; });
+  const allValid   = cache.tickets.filter(canon.isValidTicket);
+  const periodAll  = allValid.filter(t => canon.inPeriod(t, start, end));
+  const periodTeam = canon.teamTickets(periodAll, TEAM);
+  const periodKpi  = canon.kpiTickets(periodTeam);
 
+  const byAgent = {};
+  TECNICOS.forEach(tec => {
+    const baseForThis = tec.role === 'manager' ? periodAll : periodKpi;
+    const mine = baseForThis.filter(t => String(t.assignee_id) === tec.id
+      && (tec.role !== 'manager' || ['tipo_cliente_1','tipo_cliente_2'].includes(canon.getTipoCliente(t))));
+    byAgent[tec.name] = { ...canon.computeAgentMetrics(mine, metricsById), role: tec.role };
+  });
+
+  return {
+    from: start.toISOString().slice(0, 10),
+    to: end.toISOString().slice(0, 10),
+    totalRaw: periodAll.length,
+    general: canon.computePeriodSummary(periodKpi, metricsById),
+    byAgent,
+  };
+}
 // ── Carga ─────────────────────────────────────────────────────────────────────
 async function loadInBackground(force = false) {
   if (cache.loading) { console.log('Ya hay una carga en curso.'); return; }
@@ -398,10 +409,8 @@ async function loadInBackground(force = false) {
     console.error('Error en carga:', e.message);
   } finally { cache.loading = false; }
 }
-
 // ── Scan llamadas ────────────────────────────────────────────────────────────
 let scanState = { running: false, lastRun: null, lastResult: null };
-
 async function runScanLlamadas(desde, hasta, origen = 'manual') {
   if (scanState.running) { console.log('Scan de llamadas ya en curso, se omite.'); return; }
   scanState.running = true;
@@ -466,7 +475,6 @@ async function runScanLlamadas(desde, hasta, origen = 'manual') {
     scanState.lastResult = 'error: ' + e.message;
   } finally { scanState.running = false; }
 }
-
 // Schedulers
 const SCAN_INTERVAL = 6 * 60 * 60 * 1000;
 setInterval(() => {
@@ -478,9 +486,7 @@ setInterval(() => {
   const hasta = new Date().toISOString().slice(0, 10);
   runScanLlamadas(desde, hasta, 'auto');
 }, 60 * 1000);
-
 setInterval(() => { loadInBackground(false); }, 30 * 60 * 1000);
-
 // ── Estáticos ────────────────────────────────────────────────────────────────
 const staticOpts = {
   etag: false,
@@ -488,7 +494,6 @@ const staticOpts = {
 };
 app.use(express.static(path.join(__dirname, 'dashboards'), staticOpts));
 app.use(express.static(path.join(__dirname), staticOpts));
-
 // ── Endpoints ────────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
   let cp = null;
@@ -514,17 +519,14 @@ app.get('/health', (req, res) => {
     scanLlamadas: { running: scanState.running, lastRun: scanState.lastRun, lastResult: scanState.lastResult, lastScanMeta: llamadasCache.meta?.lastScan || null },
   });
 });
-
 app.get('/api/tecnicos', (req, res) => {
   res.json({ tecnicos: TECNICOS, totals: { total: TECNICOS.length, tech: TEAM.rankingIds.size, mailbox: TEAM.mailboxIds.size } });
 });
-
 app.get('/api/tecnicos/reload', (req, res) => {
   const ok = reloadTecnicos();
   if (ok && cache.tickets.length > 0) { cache.stats = computeStats(); console.log('Stats recalculadas con el nuevo equipo.'); }
   res.json({ ok, tecnicos: TECNICOS.length, message: ok ? 'tecnicos.json recargado y stats recalculadas.' : 'No se pudo recargar.' });
 });
-
 app.get('/api/kpi', (req, res) => {
   if (!cache.stats) {
     if (!cache.loading) loadInBackground(false);
@@ -536,7 +538,6 @@ app.get('/api/kpi', (req, res) => {
   }
   res.json(computeKpiPanel(period));
 });
-
 // NUEVO: los 5 períodos en una sola petición (para evitar refetch en cada cambio de pestaña).
 // Reutiliza computeKpiPanel, que ya excluye/incluye comparativas según el período.
 app.get('/api/kpi/all', (req, res) => {
@@ -549,7 +550,6 @@ app.get('/api/kpi/all', (req, res) => {
   periods.forEach(p => { result[p] = computeKpiPanel(p); });
   res.json({ periods: result, generadoAt: new Date().toISOString() });
 });
-
 // ── /api/kpi/direccion — panel de Dirección ───────────────────────────────────
 // Devuelve en una sola petición:
 //  · sla.{semanaAnterior, mesActual, anioActual} (T1, T2, media + tiempos)
@@ -563,7 +563,6 @@ function computeDireccionPanel() {
   const now = new Date();
   const year = now.getFullYear();
   const upToMonth = now.getMonth();
-
   // Helper: para un rango, devuelve {kpi (solo T1+T2 equipo), team (todo equipo válido)}
   const slice = (start, end) => {
     const allValid = cache.tickets.filter(canon.isValidTicket);
@@ -572,7 +571,6 @@ function computeDireccionPanel() {
     const kpi = canon.kpiTickets(team);
     return { kpi, team, summary: canon.computePeriodSummary(kpi, metricsById) };
   };
-
   // SLA — semana anterior cerrada, mes actual (acumulado), año actual (acumulado)
   const wkPrev = canon.getWeekRangeBack(1);
   const semAnterior = slice(wkPrev.start, wkPrev.end);
@@ -580,7 +578,6 @@ function computeDireccionPanel() {
   const mesActual = slice(mesActStart, now);
   const anioStart = new Date(year, 0, 1, 0, 0, 0, 0);
   const anioActual = slice(anioStart, now);
-
   const sla = {
     semanaAnterior: {
       desde: wkPrev.start.toISOString().slice(0,10), hasta: wkPrev.end.toISOString().slice(0,10),
@@ -605,7 +602,6 @@ function computeDireccionPanel() {
       total: anioActual.kpi.length,
     },
   };
-
   // Evolución mensual del año (SLA y tiempos)
   const slaEvoMensual = [];
   for (let m = 0; m <= upToMonth; m++) {
@@ -620,7 +616,6 @@ function computeDireccionPanel() {
       avgFR1: sl.summary.avgFR1, avgFR2: sl.summary.avgFR2,
     });
   }
-
   // Llamadas semanales (hasta 16 semanas cerradas hacia atrás).
   // Universo: equipo TAT (tech+mailbox) válidos. Métrica: % con llamada outbound.
   const isoWeekCur = canon.getISOWeekNumber(now);
@@ -642,7 +637,6 @@ function computeDireccionPanel() {
       pct: team.length > 0 ? conLlamada / team.length * 100 : 0,
     });
   }
-
   // Acumulados de llamadas
   const allValid = cache.tickets.filter(canon.isValidTicket);
   const sliceLlamadas = (start, end) => {
@@ -651,7 +645,6 @@ function computeDireccionPanel() {
     const cL = team.filter(t => tieneLlamada(t.id)).length;
     return { total: team.length, conLlamada: cL, pct: team.length > 0 ? cL / team.length * 100 : 0 };
   };
-
   const ultMesStart = new Date(year, upToMonth - 1, 1, 0, 0, 0, 0);
   const ultMesEnd   = new Date(year, upToMonth, 0, 23, 59, 59, 999);
   const llamadasAcum = {
@@ -660,7 +653,6 @@ function computeDireccionPanel() {
     ultimoMesCerrado: { ...sliceLlamadas(ultMesStart, ultMesEnd), desde: ultMesStart.toISOString().slice(0,10), hasta: ultMesEnd.toISOString().slice(0,10), monthLabel: ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'][upToMonth - 1] + ' ' + year },
     anioActual:       sliceLlamadas(anioStart, now),
   };
-
   return {
     year,
     generadoAt: new Date().toISOString(),
@@ -671,7 +663,6 @@ function computeDireccionPanel() {
     scanLlamadasMeta: { ...(llamadasCache.meta || {}), scanning: scanState.running },
   };
 }
-
 // Combina SLA T1 + T2 ponderado por número de tickets (no promedio simple).
 function combineSLA(summary) {
   const d1 = summary.sla1Den || 0, d2 = summary.sla2Den || 0;
@@ -680,7 +671,6 @@ function combineSLA(summary) {
   const cumple2 = summary.sla2 != null ? Math.round(summary.sla2 * d2 / 100) : 0;
   return Math.round((cumple1 + cumple2) / (d1 + d2) * 100);
 }
-
 app.get('/api/kpi/direccion', (req, res) => {
   if (!cache.stats) {
     if (!cache.loading) loadInBackground(false);
@@ -688,7 +678,6 @@ app.get('/api/kpi/direccion', (req, res) => {
   }
   res.json(computeDireccionPanel());
 });
-
 app.get('/api/stats', (req, res) => {
   if (!cache.stats) {
     if (!cache.loading) loadInBackground(false);
@@ -697,19 +686,36 @@ app.get('/api/stats', (req, res) => {
   }
   res.json(cache.stats);
 });
-
+// ── /api/stats/range (NUEVO) ─────────────────────────────────────────────────
+// Igual que /api/stats pero para un rango de fechas arbitrario (from/to), no
+// solo los períodos fijos. Ejemplo: /api/stats/range?from=2026-07-01 devuelve
+// el acumulado desde esa fecha hasta hoy, desglosado por técnico igual que
+// /api/stats — pensado para acumular objetivos desde el inicio de un semestre
+// sin perder meses intermedios.
+app.get('/api/stats/range', (req, res) => {
+  if (!cache.stats) {
+    if (!cache.loading) loadInBackground(false);
+    return res.status(202).json({ error: 'Caché aún cargando', stage: cache.loadingStage, partial: cache.ticketsPartial });
+  }
+  const { from, to } = req.query;
+  if (!from) return res.status(400).json({ error: 'Falta el parámetro "from" (formato YYYY-MM-DD)' });
+  const start = new Date(from + 'T00:00:00');
+  const end = to ? new Date(to + 'T23:59:59') : new Date();
+  if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+    return res.status(400).json({ error: 'Fechas inválidas, usa formato YYYY-MM-DD' });
+  }
+  res.json(computeRangeStats(start, end));
+});
 app.get('/api/reload', (req, res) => {
   cache.tickets = []; cache.metrics = []; cache.stats = null; cache.loadedAt = null;
   loadInBackground(true);
   res.json({ ok: true, message: 'Recarga completa iniciada (checkpoint eliminado).' });
 });
-
 app.get('/api/refresh', (req, res) => {
   cache.tickets = []; cache.metrics = []; cache.stats = null; cache.loadedAt = null;
   loadInBackground(false);
   res.json({ ok: true, message: 'Recarga incremental iniciada.' });
 });
-
 app.get('/api/ticket/:id', async (req, res) => {
   try {
     const r = await fetch(`${BASE}/tickets/${req.params.id}.json`, { headers: HEADERS });
@@ -717,7 +723,6 @@ app.get('/api/ticket/:id', async (req, res) => {
     res.json(await r.json());
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-
 app.get('/api/ticket/:id/comments', async (req, res) => {
   try {
     const r = await fetch(`${BASE}/tickets/${req.params.id}/comments.json`, { headers: HEADERS });
@@ -725,7 +730,6 @@ app.get('/api/ticket/:id/comments', async (req, res) => {
     res.json(await r.json());
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-
 app.get('/api/ticket-fields', async (req, res) => {
   try {
     const r = await fetch(`${BASE}/ticket_fields.json`, { headers: HEADERS });
@@ -734,12 +738,10 @@ app.get('/api/ticket-fields', async (req, res) => {
     res.json({ total: data.ticket_fields.length, fields: data.ticket_fields.map(f => ({ id: f.id, title: f.title, type: f.type, key: f.key, tag: f.tag||null, custom_field_options: f.custom_field_options||null })) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-
 // ── Llamadas ──────────────────────────────────────────────────────────────────
 app.get('/api/llamadas/meta', (req, res) => {
   res.json({ ...(llamadasCache.meta || {}), scanning: scanState.running, statsReady: cache.stats !== null, loadingStage: cache.loadingStage, ticketsPartial: cache.ticketsPartial });
 });
-
 app.get('/api/llamadas/scan', (req, res) => {
   const desde = req.query.desde || new Date(Date.now() - 7*24*60*60*1000).toISOString().slice(0,10);
   const hasta = req.query.hasta || new Date().toISOString().slice(0,10);
@@ -747,7 +749,6 @@ app.get('/api/llamadas/scan', (req, res) => {
   res.json({ ok: true, message: `Escaneando ${desde} → ${hasta} en background.` });
   runScanLlamadas(desde, hasta, 'manual');
 });
-
 // Helper compartido: KPIs de llamadas para un período concreto (canon).
 function computeLlamadasPeriod(period) {
   const { start, end } = canon.getDateRange(period);
@@ -773,7 +774,6 @@ function computeLlamadasPeriod(period) {
     byAgent,
   };
 }
-
 app.get('/api/llamadas/stats', (req, res) => {
   if (!cache.stats) {
     if (!cache.loading) loadInBackground(false);
@@ -783,7 +783,6 @@ app.get('/api/llamadas/stats', (req, res) => {
   const data = computeLlamadasPeriod(period);
   res.json({ ...data, llamadasMeta: { ...(llamadasCache.meta || {}), scanning: scanState.running } });
 });
-
 // NUEVO: los 5 períodos en una sola petición (cambio de pestaña instantáneo en el cliente).
 app.get('/api/llamadas/stats/all', (req, res) => {
   if (!cache.stats) {
@@ -799,7 +798,6 @@ app.get('/api/llamadas/stats/all', (req, res) => {
     generadoAt: new Date().toISOString(),
   });
 });
-
 // ── Legacy (mientras el kpi.html siga sin migrar) ────────────────────────────
 app.get('/tickets', (req, res) => {
   if (cache.tickets.length === 0 && !cache.loading) loadInBackground(false);
@@ -809,13 +807,11 @@ app.get('/tickets', (req, res) => {
   else if (req.query.year) tickets = tickets.filter(t => (t.created_at||'').startsWith(req.query.year));
   res.json({ tickets, total: tickets.length, cachedAt: cache.loadedAt, loading: cache.loading });
 });
-
 app.get('/metrics', (req, res) => {
   if (cache.metrics.length === 0 && !cache.loading) loadInBackground(false);
   if (cache.metrics.length === 0 && cache.loading) return res.status(202).json({ metrics: [], total: 0, loading: true, stage: cache.loadingStage, partial: cache.ticketsPartial });
   res.json({ metrics: cache.metrics, total: cache.metrics.length, cachedAt: cache.loadedAt, loading: cache.loading });
 });
-
 app.get('/all', (req, res) => {
   if (cache.tickets.length === 0 && !cache.loading) loadInBackground(false);
   const metricsById = {};
@@ -825,13 +821,11 @@ app.get('/all', (req, res) => {
   else if (req.query.year) combined = combined.filter(t => (t.created_at||'').startsWith(req.query.year));
   res.json({ tickets: combined, total: combined.length, cachedAt: cache.loadedAt, loading: cache.loading });
 });
-
 app.get('/refresh', (req, res) => {
   cache.tickets = []; cache.metrics = []; cache.stats = null; cache.loadedAt = null;
   loadInBackground(false);
   res.json({ ok: true, message: 'Recarga incremental iniciada en background.' });
 });
-
 app.get('/api/tickets', (req, res) => {
   if (cache.tickets.length === 0 && !cache.loading) loadInBackground(false);
   let tickets = cache.tickets;
@@ -839,13 +833,12 @@ app.get('/api/tickets', (req, res) => {
   else if (req.query.year) tickets = tickets.filter(t => (t.created_at||'').startsWith(req.query.year));
   res.json({ tickets, total: tickets.length, cachedAt: cache.loadedAt, loading: cache.loading });
 });
-
 // ── Arrancar ──────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`\nServidor MP Ascensores v5 activo en puerto ${PORT}`);
   console.log(`Equipo TAT: ${TECNICOS.length} entradas (${TEAM.rankingIds.size} tech, ${TEAM.mailboxIds.size} mailbox, ${TECNICOS.filter(t=>t.role==='manager').length} manager)`);
-  console.log('Endpoints nuevos: /api/kpi  /api/tecnicos  /api/tecnicos/reload');
+  console.log('Endpoints nuevos: /api/kpi  /api/tecnicos  /api/tecnicos/reload  /api/stats/range');
   console.log('Heredados:        /api/stats  /api/llamadas/stats  /api/reload  /api/refresh');
   console.log('v5: canon.js como fuente única de cálculo para los 3 dashboards\n');
   loadInBackground(false);
