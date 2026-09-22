@@ -244,7 +244,7 @@ function computeAgentMetrics(tickets, metricsById) {
   const tipo1 = tickets.filter(t => getTipoCliente(t) === 'tipo_cliente_1');
   const tipo2 = tickets.filter(t => getTipoCliente(t) === 'tipo_cliente_2');
   const resolved = tickets.filter(t => t.status === 'solved' || t.status === 'closed').length;
-  const puntos   = tickets.reduce((s, t) => s + getPuntos(t), 0);
+  const puntos   = Math.round(tickets.reduce((s, t) => s + getPuntos(t), 0) * 10) / 10;
   const fr1  = tipo1.map(t => getBusinessFR(t, metricsById)).filter(v => v !== null);
   const fr2  = tipo2.map(t => getBusinessFR(t, metricsById)).filter(v => v !== null);
   const res1 = tipo1.map(t => getBusinessRes(t, metricsById)).filter(v => v !== null);
