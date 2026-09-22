@@ -59,7 +59,7 @@ function getField(t, fieldId) {
   return (t.custom_fields || []).find(f => f.id === fieldId)?.value ?? null;
 }
 function getTipoCliente(t)   { return getField(t, CF_TIPO_CLIENTE); }
-function getPuntos(t)        { return parseInt(getField(t, CF_PUNTOS)) || 0; }
+function getPuntos(t)        { return parseFloat(getField(t, CF_PUNTOS)) || 0; }
 function getTipificacion(t)  { return getField(t, CF_TIPIFICACION); }
 
 // ── Validación de ticket (canon: asunto Y tipificación) ──────────────────────
